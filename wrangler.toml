@@ -5,12 +5,17 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 preview_urls = true
 
+[build]
+command = "npm run db:init:remote"
+
 [assets]
 directory = "./public"
 binding = "ASSETS"
 
-# Les liaisons D1, R2 et e-mail seront ajoutées après le premier déploiement,
-# depuis Cloudflare, sans bloquer la mise en ligne initiale du site.
+[[d1_databases]]
+binding = "DB"
+database_name = "jai-besoin-de-db"
+database_id = "47e10f3e-bb3c-4a5b-970d-5f0286b70814"
 
 [vars]
 APP_NAME = "J’ai besoin de..."
