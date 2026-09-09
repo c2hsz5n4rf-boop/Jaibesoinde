@@ -129,7 +129,7 @@ async function queryOverpass(lat,lon,radius,category,q,env) {
   const endpoints=[env.OVERPASS_URL,'https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'].filter(Boolean);
   for(const endpoint of [...new Set(endpoints)]) {
     try {
-      const r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded;charset=UTF-8','accept':'application/json','user-agent':'jai-besoin-de/1.0'},body:new URLSearchParams({data:body}),signal:AbortSignal.timeout(7000)});
+      const r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded;charset=UTF-8','accept':'application/json','user-agent':'jai-besoin-de/1.0'},body:new URLSearchParams({data:body}),signal:AbortSignal.timeout(3500)});
       if(!r.ok) continue;
       const data=await r.json();
       const results=normalizeOverpass(data,lat,lon,category).filter(x=>x.distance<=radius);
@@ -176,7 +176,7 @@ async function queryPhoton(lat,lon,radius,category,q) {
       u.searchParams.set('q',cleaned); u.searchParams.set('lat',String(lat)); u.searchParams.set('lon',String(lon));
       u.searchParams.set('bbox',bboxAround(lat,lon,radius)); u.searchParams.set('limit','30'); u.searchParams.set('lang','fr'); u.searchParams.set('countrycode','FR');
     }
-    const r=await fetch(u,{headers:{accept:'application/json','user-agent':'jai-besoin-de/1.0'},signal:AbortSignal.timeout(7000)});
+    const r=await fetch(u,{headers:{accept:'application/json','user-agent':'jai-besoin-de/1.0'},signal:AbortSignal.timeout(3500)});
     if(!r.ok) return [];
     return normalizePhoton(await r.json(),lat,lon,category,radius);
   } catch { return []; }
@@ -197,24 +197,18 @@ async function searchFallback(url, env) {
   const requested=Math.max(100,Math.min(25000,Number(url.searchParams.get('radius'))||2500));
   const q=url.searchParams.get('q') || '';
   const category=url.searchParams.get('category') || detectCategory(q);
-  const radii=[requested,5000,10000,25000].filter((x,i,a)=>x>=requested&&a.indexOf(x)===i);
+  const radii=[requested];
 
   for(const radius of radii) {
-    const photon=await queryPhoton(lat,lon,radius,category,q);
-    if(photon.length) {
-      const results=dedupeResults(photon).slice(0,70);
-      const expanded=radius>requested;
-      return json({category:category||'autre',label:expanded?`${category?categoryLabel(category):`Résultats pour « ${q} »`} · jusqu’à ${radius/1000} km`:(category?categoryLabel(category):`Résultats pour « ${q} »`),results,generated_at:new Date().toISOString(),fallback:true,source:'Photon/OpenStreetMap',effective_radius:radius,auto_expanded:expanded});
-    }
-    const overpass=await queryOverpass(lat,lon,radius,category,q,env);
-    if(overpass.length) {
-      const results=dedupeResults(overpass).slice(0,70);
-      const expanded=radius>requested;
-      return json({category:category||'autre',label:expanded?`${category?categoryLabel(category):`Résultats pour « ${q} »`} · jusqu’à ${radius/1000} km`:(category?categoryLabel(category):`Résultats pour « ${q} »`),results,generated_at:new Date().toISOString(),fallback:true,source:'Overpass/OpenStreetMap',effective_radius:radius,auto_expanded:expanded});
-    }
-  }
+  const [photon,overpass]=await Promise.all([
+    queryPhoton(lat,lon,radius,category,q),
+    queryOverpass(lat,lon,radius,category,q,env)
+  ]);
+  const results=dedupeResults([...(photon||[]),...(overpass||[])]).slice(0,70);
+  if(results.length) return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results,generated_at:new Date().toISOString(),fallback:true,source:'OpenStreetMap',effective_radius:radius,auto_expanded:false});
+}
 
-  return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results:[],generated_at:new Date().toISOString(),source_degraded:false,effective_radius:25000,message:'Aucun résultat trouvé jusqu’à 25 km.'});
+  return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results:[],generated_at:new Date().toISOString(),source_degraded:false,effective_radius:requested,message:`Aucun résultat trouvé dans un rayon de ${requested>=1000?(requested/1000)+' km':requested+' m'}. Essaie une distance plus grande.`});
 }
 
 function parisParts(date = new Date()) {
@@ -277,22 +271,23 @@ export default {
     const url=new URL(request.url);
     if(url.pathname==='/api/contact'&&request.method==='POST') return contactEndpoint(request,env);
     if(url.pathname==='/api/places'&&request.method==='GET') {
-      let primaryData=null;
+    const fallbackPromise=searchFallback(url,env);
+    const primaryPromise=(async()=>{
       try {
         const primary=await app.fetch(request,env,ctx);
-        if(primary.ok) {
-          try { primaryData=await primary.clone().json(); } catch {}
-          if(Array.isArray(primaryData?.results)&&primaryData.results.length>0) return primary;
-        }
-      } catch {}
-      const fallback=await searchFallback(url,env);
-      if(!fallback.ok) return fallback;
-      try {
-        const fd=await fallback.clone().json();
-        if(Array.isArray(primaryData?.results)&&primaryData.results.length) fd.results=dedupeResults([...primaryData.results,...fd.results]);
-        return json(fd);
-      } catch { return fallback; }
-    }
+        if(!primary.ok) return null;
+        const data=await primary.clone().json().catch(()=>null);
+        return Array.isArray(data?.results)&&data.results.length>0?primary:null;
+      } catch { return null; }
+    })();
+    const first=await Promise.race([
+      fallbackPromise.then(r=>({kind:'fallback',r})),
+      primaryPromise.then(r=>({kind:'primary',r}))
+    ]);
+    if(first.kind==='primary'&&first.r) return first.r;
+    if(first.kind==='fallback') return first.r;
+    return fallbackPromise;
+  }
     return app.fetch(request,env,ctx);
   },
   async scheduled(controller, env, ctx) {

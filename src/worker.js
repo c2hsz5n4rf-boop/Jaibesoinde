@@ -318,18 +318,23 @@ function textFold(v=''){ return String(v).toLowerCase().normalize('NFD').replace
 async function findRealtimeDataset(env, lat, lon){
   const commune=await reverseCommune(lat,lon).catch(()=>null);
   const arr=await getTransportCatalog(env);
-  const wanted=[commune?.nom,commune?.codeDepartement,commune?.codeRegion].filter(Boolean).map(textFold);
-  let candidates=arr.filter(ds=>{
+  const communeName=textFold(commune?.nom||'');
+  const insee=String(commune?.code||'');
+  const nearLeMans=distanceM(lat,lon,48.0061,0.1996)<50000;
+  const scored=[];
+  for(const ds of arr){
     const resources=chooseRealtimeResources(ds);
-    if(!resources.vehicle)return false;
-    const hay=textFold(JSON.stringify({title:ds.title,slug:ds.slug,covered_area:ds.covered_area,territory:ds.territory,aom:ds.aom,community_resources:ds.community_resources}));
-    return wanted.some(w=>w.length>1&&hay.includes(w));
-  });
-  if(!candidates.length&&distanceM(lat,lon,48.0061,0.1996)<45000){
-    const setram=arr.find(d=>d.slug===env.TRANSPORT_DATASET_SLUG_SETRAM||d.title?.toLowerCase().includes('setram'));
-    if(setram)candidates=[setram];
+    if(!resources.vehicle) continue;
+    const hay=textFold(JSON.stringify({title:ds.title,slug:ds.slug,covered_area:ds.covered_area,territory:ds.territory,aom:ds.aom}));
+    let score=0;
+    if(communeName.length>2 && hay.includes(communeName)) score+=120;
+    if(insee && new RegExp(`(^|\D)${insee}(\D|$)`).test(hay)) score+=180;
+    if(nearLeMans && /setram|le mans/.test(hay)) score+=300;
+    if(score>0) scored.push({ds,score});
   }
-  return {commune,dataset:candidates[0]||null};
+  scored.sort((a,b)=>b.score-a.score);
+  const best=scored[0];
+  return {commune,dataset:best&&best.score>=100?best.ds:null};
 }
 
 async function decodeGtfsRt(url){

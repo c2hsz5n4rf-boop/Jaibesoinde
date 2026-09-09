@@ -46,6 +46,8 @@ function initMap(){
     attributionControl: true
   });
   state.map.addControl(new maplibregl.NavigationControl({showCompass:false}),'top-left');
+  state.map.on('load',()=>{ state.map.resize(); setTimeout(()=>state.map.resize(),180); });
+  window.addEventListener('resize',()=>state.map?.resize());
   state.map.on('moveend', () => {
     const c=state.map.getCenter();
     if ($('#followMap')?.checked){ state.lat=c.lat; state.lon=c.lng; }
@@ -67,7 +69,9 @@ function fitSearchResults(items){
   try{
     const bounds=new maplibregl.LngLatBounds([state.lon,state.lat],[state.lon,state.lat]);
     items.slice(0,20).forEach(p=>bounds.extend([p.lon,p.lat]));
-    state.map.fitBounds(bounds,{padding:{top:45,bottom:45,left:45,right:390},maxZoom:14,duration:650});
+    state.map.resize();
+    state.map.fitBounds(bounds,{padding:{top:32,bottom:32,left:32,right:Math.min(360,Math.round(window.innerWidth*.32))},maxZoom:14,duration:450});
+    setTimeout(()=>state.map?.resize(),120);
   }catch{}
 }
 
@@ -112,14 +116,18 @@ function renderPlaces(items,meta={}){
 }
 
 async function loadTransport(){
-  $('#transportBody').innerHTML='<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
+  $('#transportBody').innerHTML='<div class="skeleton"></div><div class="skeleton"></div>';
   try{
     const d=await api(`/api/transport/nearby?lat=${state.lat}&lon=${state.lon}&radius=7000`);
     const chunks=[];
-    if(d.message) chunks.push(`<div class="empty">${escapeHtml(d.message)}</div>`);
-    for(const v of d.vehicles||[]){ chunks.push(`<div class="realtime-row"><div class="line-badge">${escapeHtml(v.line||'?')}</div><div><b>${v.vehicle?`Véhicule ${escapeHtml(v.vehicle)}`:'Transport en approche'}</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · prochain arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class="eta">${v.eta_minutes!=null?`${v.eta_minutes} min`:'Direct'}<small>${escapeHtml(d.network||'')}</small></div></div>`); }
-    for(const a of d.alerts||[]){ chunks.push(`<div class="alert"><b>${escapeHtml(a.title)}</b>${a.description?`<br>${escapeHtml(a.description).slice(0,260)}`:''}</div>`); }
-    $('#transportBody').innerHTML=chunks.join('')||'<div class="empty">Aucun véhicule temps réel détecté à proximité.</div>';
+    const vehicles=d.vehicles||[];
+    const cleanTransportText=v=>{const x=document.createElement('textarea');x.innerHTML=String(v||'').replace(/&amp;nbsp;|&nbsp;/gi,' ');return x.value.replace(/\s+/g,' ').trim();};
+    if(d.message) chunks.push(`<div class="empty">${escapeHtml(cleanTransportText(d.message))}</div>`);
+    for(const v of vehicles){ chunks.push(`<div class="realtime-row"><div class="line-badge">${escapeHtml(v.line||'?')}</div><div><b>${v.vehicle?`Véhicule ${escapeHtml(v.vehicle)}`:'Transport en approche'}</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · prochain arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class="eta">${v.eta_minutes!=null?`${v.eta_minutes} min`:'Direct'}<small>${escapeHtml(d.network||'')}</small></div></div>`); }
+    if(vehicles.length || /setram|le mans/i.test(String(d.network||''))){
+      for(const a of d.alerts||[]){ const title=cleanTransportText(a.title),desc=cleanTransportText(a.description); chunks.push(`<div class="alert"><b>${escapeHtml(title)}</b>${desc?`<br>${escapeHtml(desc).slice(0,260)}`:''}</div>`); }
+    }
+    $('#transportBody').innerHTML=chunks.join('')||`<div class="empty">Aucun véhicule temps réel géolocalisé à proximité${d.location?.nom?` de ${escapeHtml(d.location.nom)}`:''}.</div>`;
   }catch(e){ $('#transportBody').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`; }
 }
 
