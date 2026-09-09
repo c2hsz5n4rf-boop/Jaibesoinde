@@ -1,0 +1,181 @@
+from pathlib import Path
+
+# Faster nearby search: return as soon as one OpenStreetMap source has useful results.
+p = Path('src/entry.js')
+s = p.read_text()
+s = s.replace('AbortSignal.timeout(3500)', 'AbortSignal.timeout(2200)')
+sf = s.index('async function searchFallback')
+a = s.index('  for(const radius of radii) {', sf)
+b = s.index('\n\n  return json(', a)
+new_loop = """  for(const radius of radii) {
+    const photonPromise=queryPhoton(lat,lon,radius,category,q);
+    const overpassPromise=queryOverpass(lat,lon,radius,category,q,env);
+    const first=await Promise.race([
+      photonPromise.then(v=>({source:'photon',v})),
+      overpassPromise.then(v=>({source:'overpass',v}))
+    ]);
+    let results=dedupeResults(first.v||[]).slice(0,70);
+    if(!results.length){
+      const other=first.source==='photon'?await overpassPromise:await photonPromise;
+      results=dedupeResults(other||[]).slice(0,70);
+    }
+    if(results.length) return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results,generated_at:new Date().toISOString(),fallback:true,source:'OpenStreetMap',effective_radius:radius,auto_expanded:false});
+  }"""
+s = s[:a] + new_loop + s[b:]
+p.write_text(s)
+
+# Add affected route ids to transport alerts.
+p = Path('src/worker.js')
+s = p.read_text()
+old_alert = "const alerts=(af?.entity||[]).filter(e=>e.alert).slice(0,10).map(e=>({id:e.id,title:e.alert.headerText?.translation?.[0]?.text||'Information trafic',description:e.alert.descriptionText?.translation?.[0]?.text||'',effect:e.alert.effect||null}));"
+new_alert = """const alerts=(af?.entity||[]).filter(e=>e.alert).slice(0,30).map(e=>({
+      id:e.id,
+      title:e.alert.headerText?.translation?.[0]?.text||'Information trafic',
+      description:e.alert.descriptionText?.translation?.[0]?.text||'',
+      effect:e.alert.effect||null,
+      route_ids:[...new Set((e.alert.informedEntity||[]).map(x=>x.routeId).filter(Boolean))]
+    }));"""
+if old_alert in s:
+    s = s.replace(old_alert, new_alert)
+p.write_text(s)
+
+# Client transport: only vehicles genuinely close to the user, one useful row per line.
+p = Path('public/app.js')
+s = p.read_text()
+start = s.index('async function loadTransport(){')
+end = s.index('\n\nasync function loadEvents(){', start)
+new_transport = """async function loadTransport(){
+  $('#transportBody').innerHTML='<div class=\"skeleton\"></div><div class=\"skeleton\"></div>';
+  try{
+    const localRadius=1500;
+    const d=await api(`/api/transport/nearby?lat=${state.lat}&lon=${state.lon}&radius=${localRadius}`);
+    const chunks=[];
+    const cleanTransportText=v=>{const x=document.createElement('textarea');x.innerHTML=String(v||'').replace(/&amp;nbsp;|&nbsp;/gi,' ');return x.value.replace(/\\s+/g,' ').trim();};
+    const byLine=new Map();
+    for(const v of (d.vehicles||[]).sort((a,b)=>a.distance-b.distance)){
+      const line=String(v.line||'?');
+      const current=byLine.get(line);
+      if(!current || v.distance<current.distance || (v.eta_minutes!=null && (current.eta_minutes==null || v.eta_minutes<current.eta_minutes))) byLine.set(line,v);
+    }
+    const vehicles=[...byLine.values()].sort((a,b)=>a.distance-b.distance).slice(0,8);
+    const visibleLines=new Set(vehicles.map(v=>String(v.line||'')));
+    if(d.message && !vehicles.length) chunks.push(`<div class=\"empty\">${escapeHtml(cleanTransportText(d.message))}</div>`);
+    for(const v of vehicles){
+      chunks.push(`<div class=\"realtime-row\"><div class=\"line-badge\">${escapeHtml(v.line||'?')}</div><div><b>Ligne ${escapeHtml(v.line||'?')} près de toi</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · prochain arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class=\"eta\">${v.eta_minutes!=null?`${v.eta_minutes} min`:'En circulation'}<small>${escapeHtml(d.network||'')}</small></div></div>`);
+    }
+    const localAlerts=(d.alerts||[]).filter(a=>(a.route_ids||[]).some(r=>visibleLines.has(String(r)))).slice(0,4);
+    for(const a of localAlerts){
+      const title=cleanTransportText(a.title),desc=cleanTransportText(a.description);
+      chunks.push(`<div class=\"alert\"><b>${escapeHtml(title)}</b>${desc?`<br>${escapeHtml(desc).slice(0,220)}`:''}</div>`);
+    }
+    $('#transportBody').innerHTML=chunks.join('')||`<div class=\"empty\">Aucun véhicule temps réel à moins de 1,5 km${d.location?.nom?` autour de ${escapeHtml(d.location.nom)}`:''}.</div>`;
+  }catch(e){ $('#transportBody').innerHTML=`<div class=\"empty\">${escapeHtml(e.message)}</div>`; }
+}"""
+s = s[:start] + new_transport + s[end:]
+
+# Replace fake plan buttons with a dedicated plan viewer.
+old_plan = """$('#findStation').addEventListener('click',()=>{track('plan','gare');searchPlaces('gare',false);});
+$('#findMall').addEventListener('click',()=>{track('plan','centre_commercial');searchPlaces('centre commercial',false);});"""
+new_plan = """const planDialog=$('#planDialog');
+let planPlaces=[];
+function osmEmbedUrl(p){
+  const dx=.0032,dy=.0022;
+  const bbox=[p.lon-dx,p.lat-dy,p.lon+dx,p.lat+dy].join(',');
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(`${p.lat},${p.lon}`)}`;
+}
+function openLevelUpUrl(p){ return `https://openlevelup.net/?l=0#19/${p.lat}/${p.lon}`; }
+function showPlanPlace(p){
+  if(!p)return;
+  $('#planPlaceTitle').textContent=p.title||'Plan du lieu';
+  $('#planPlaceAddress').textContent=[p.address,formatDistance(p.distance)].filter(Boolean).join(' · ');
+  $('#planFrame').src=osmEmbedUrl(p);
+  $('#planIndoor').href=openLevelUpUrl(p);
+  $('#planRoute').href=navUrl(p);
+  const official=$('#planOfficial');
+  if(p.website){official.href=p.website;official.hidden=false;}else{official.hidden=true;official.removeAttribute('href');}
+  $('#planAlternatives').innerHTML=planPlaces.map((x,i)=>`<button type=\"button\" data-plan-index=\"${i}\" class=\"plan-choice ${x.id===p.id?'active':''}\"><b>${escapeHtml(x.title)}</b><small>${formatDistance(x.distance)}</small></button>`).join('');
+}
+$('#planAlternatives').addEventListener('click',e=>{const b=e.target.closest('[data-plan-index]');if(b)showPlanPlace(planPlaces[Number(b.dataset.planIndex)]);});
+$('[data-close-plan]').addEventListener('click',()=>planDialog.close());
+async function openNearbyPlan(category){
+  track('plan',category);
+  planDialog.showModal();
+  $('#planPlaceTitle').textContent=category==='gare'?'Recherche de la gare la plus proche…':'Recherche du centre commercial le plus proche…';
+  $('#planPlaceAddress').textContent='';
+  $('#planFrame').removeAttribute('src');
+  $('#planAlternatives').innerHTML='<div class=\"skeleton\"></div><div class=\"skeleton\"></div>';
+  try{
+    const params=new URLSearchParams({lat:state.lat,lon:state.lon,radius:'20000',category});
+    const d=await api(`/api/places?${params}`);
+    planPlaces=(d.results||[]).slice(0,6);
+    if(!planPlaces.length) throw new Error('Aucun lieu trouvé à proximité.');
+    showPlanPlace(planPlaces[0]);
+  }catch(err){
+    $('#planPlaceTitle').textContent='Plan indisponible';
+    $('#planPlaceAddress').textContent=err.message;
+    $('#planAlternatives').innerHTML='';
+  }
+}
+$('#findStation').addEventListener('click',()=>openNearbyPlan('gare'));
+$('#findMall').addEventListener('click',()=>openNearbyPlan('centrecommercial'));"""
+if old_plan not in s:
+    raise SystemExit('plan listeners not found')
+s = s.replace(old_plan, new_plan)
+p.write_text(s)
+
+# Add plan dialog HTML.
+p = Path('public/index.html')
+s = p.read_text()
+if 'id="planDialog"' not in s:
+    marker = '  <dialog id="contributionDialog">'
+    dialog = """  <dialog id=\"planDialog\" class=\"plan-dialog\">
+    <div class=\"plan-dialog-inner\">
+      <div class=\"dialog-head\"><div><p class=\"kicker\">Plan du lieu</p><h2 id=\"planPlaceTitle\">Chargement…</h2><p id=\"planPlaceAddress\" class=\"dialog-note\"></p></div><button type=\"button\" class=\"close\" data-close-plan>×</button></div>
+      <div class=\"plan-frame-wrap\"><iframe id=\"planFrame\" title=\"Plan détaillé\" loading=\"lazy\"></iframe></div>
+      <div class=\"plan-actions\"><a id=\"planIndoor\" class=\"btn primary\" target=\"_blank\" rel=\"noopener\">Voir le plan intérieur</a><a id=\"planRoute\" class=\"btn light\" target=\"_blank\" rel=\"noopener\">Itinéraire</a><a id=\"planOfficial\" class=\"btn light\" target=\"_blank\" rel=\"noopener\" hidden>Site officiel</a></div>
+      <p class=\"plan-help\">Le plan détaillé s’affiche ici. Le bouton « plan intérieur » ouvre les niveaux, commerces et services quand ils sont renseignés dans les données cartographiques.</p>
+      <div id=\"planAlternatives\" class=\"plan-alternatives\"></div>
+    </div>
+  </dialog>
+
+"""
+    s = s.replace(marker, dialog + marker)
+p.write_text(s)
+
+# iPad portrait and plan styles. Prevent CSS grid rows stretching the map panel.
+p = Path('public/app.css')
+s = p.read_text()
+marker = '/* ipad-plan-local-transport-fix */'
+if marker not in s:
+    s += """
+
+/* ipad-plan-local-transport-fix */
+.dashboard{align-items:start}
+.map-panel,.transport-panel,.events-panel{align-self:start}
+.map-wrap #map{width:100%;height:100%}
+.transport-panel #transportBody{max-height:500px;overflow:auto;padding-right:3px}
+.plan-dialog{max-width:900px;width:calc(100% - 32px)}
+.plan-dialog-inner{padding:20px;display:flex;flex-direction:column;gap:14px}
+.plan-frame-wrap{height:430px;border:1px solid var(--line);border-radius:16px;overflow:hidden;background:#f1eeeb}
+.plan-frame-wrap iframe{width:100%;height:100%;border:0;background:#f1eeeb}
+.plan-actions{display:flex;flex-wrap:wrap;gap:8px}
+.plan-actions a{text-decoration:none;text-align:center}
+.plan-help{font-size:12px;color:var(--muted);margin:0;line-height:1.45}
+.plan-alternatives{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.plan-choice{border:1px solid var(--line);background:#fffaf8;border-radius:12px;padding:10px;text-align:left}
+.plan-choice.active{border-color:var(--red);box-shadow:0 0 0 1px var(--red)}
+.plan-choice b,.plan-choice small{display:block}
+.plan-choice small{color:var(--muted);margin-top:3px}
+@media(min-width:761px) and (max-width:1120px){
+  .map-panel{grid-column:1/-1}
+  .map-wrap{height:400px!important}
+  .transport-panel #transportBody{max-height:420px}
+}
+@media(max-width:760px){
+  .plan-frame-wrap{height:52vh;min-height:330px}
+  .plan-alternatives{grid-template-columns:1fr 1fr}
+  .plan-actions{display:grid;grid-template-columns:1fr 1fr}
+  .plan-actions a:first-child{grid-column:1/-1}
+}
+"""
+p.write_text(s)
