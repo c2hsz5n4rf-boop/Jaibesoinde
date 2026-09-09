@@ -2,6 +2,7 @@ import app from './worker.js';
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
 const WEB3FORMS_URL = 'https://api.web3forms.com/submit';
+const PHOTON_URL = 'https://photon.komoot.io';
 
 const SEARCH_RULES = {
   toilettes: ['[amenity=toilets]'],
@@ -18,14 +19,41 @@ const SEARCH_RULES = {
   recyclage: ['[amenity=recycling]'],
   velo: ['[amenity=bicycle_repair_station]', '[amenity=bicycle_parking]'],
   campingcar: ['[tourism=caravan_site]', '[amenity=sanitary_dump_station]'],
-  restaurant: ['[amenity=restaurant]', '[amenity=fast_food]', '[shop=bakery]'],
+  restaurant: ['[amenity=restaurant]', '[amenity=fast_food]'],
+  boulangerie: ['[shop=bakery]'],
   banque: ['[amenity=atm]', '[amenity=bank]'],
   poste: ['[amenity=post_office]'],
   bibliotheque: ['[amenity=library]'],
   airejeux: ['[leisure=playground]'],
   wifi: ['[internet_access=wlan]'],
   gare: ['[railway=station]', '[public_transport=station]'],
-  centrecommercial: ['[shop=mall]']
+  centrecommercial: ['[shop=mall]'],
+  medecin: ['[amenity=doctors]'],
+  dentiste: ['[amenity=dentist]'],
+  hopital: ['[amenity=hospital]'],
+  coiffeur: ['[shop=hairdresser]'],
+  cafe: ['[amenity=cafe]'],
+  hotel: ['[tourism=hotel]'],
+  garage: ['[shop=car_repair]'],
+  lavageauto: ['[amenity=car_wash]'],
+  opticien: ['[shop=optician]'],
+  police: ['[amenity=police]'],
+  mairie: ['[amenity=townhall]'],
+  cinema: ['[amenity=cinema]'],
+  musee: ['[tourism=museum]'],
+  parc: ['[leisure=park]'],
+  piscine: ['[leisure=swimming_pool]']
+};
+
+const PHOTON_TAGS = {
+  toilettes: 'amenity:toilets', laverie: 'shop:laundry', eau: 'amenity:drinking_water', pharmacie: 'amenity:pharmacy',
+  recharge: 'amenity:charging_station', parking: 'amenity:parking', carburant: 'amenity:fuel', supermarche: 'shop:supermarket',
+  veterinaire: 'amenity:veterinary', defibrillateur: 'emergency:defibrillator', douche: 'amenity:shower', recyclage: 'amenity:recycling',
+  velo: 'amenity:bicycle_repair_station', campingcar: 'tourism:caravan_site', restaurant: 'amenity:restaurant', boulangerie: 'shop:bakery',
+  banque: 'amenity:bank', poste: 'amenity:post_office', bibliotheque: 'amenity:library', airejeux: 'leisure:playground', gare: 'railway:station',
+  centrecommercial: 'shop:mall', medecin: 'amenity:doctors', dentiste: 'amenity:dentist', hopital: 'amenity:hospital', coiffeur: 'shop:hairdresser',
+  cafe: 'amenity:cafe', hotel: 'tourism:hotel', garage: 'shop:car_repair', lavageauto: 'amenity:car_wash', opticien: 'shop:optician',
+  police: 'amenity:police', mairie: 'amenity:townhall', cinema: 'amenity:cinema', musee: 'tourism:museum', parc: 'leisure:park', piscine: 'leisure:swimming_pool'
 };
 
 const SEARCH_ALIASES = [
@@ -34,10 +62,14 @@ const SEARCH_ALIASES = [
   [/parking|stationnement/i, 'parking'], [/essence|gazole|diesel|carburant|station.service/i, 'carburant'],
   [/supermarch|courses|epicerie/i, 'supermarche'], [/veter/i, 'veterinaire'], [/defibr/i, 'defibrillateur'],
   [/douche/i, 'douche'], [/recycl|dechet/i, 'recyclage'], [/velo|gonfl/i, 'velo'],
-  [/camping.?car|vidange|cassette wc/i, 'campingcar'], [/restaurant|manger|boulanger|repas/i, 'restaurant'],
+  [/camping.?car|vidange|cassette wc/i, 'campingcar'], [/boulanger|pain/i, 'boulangerie'], [/restaurant|manger|repas/i, 'restaurant'],
   [/distributeur|banque|retrait/i, 'banque'], [/poste|courrier/i, 'poste'], [/biblioth|mediat/i, 'bibliotheque'],
   [/aire.*jeu|enfant/i, 'airejeux'], [/wifi|wi-fi|internet/i, 'wifi'], [/gare|station ferroviaire/i, 'gare'],
-  [/centre commercial|centre-commercial|galerie marchande|mall/i, 'centrecommercial']
+  [/centre commercial|centre-commercial|galerie marchande|mall/i, 'centrecommercial'], [/medecin|docteur|generaliste/i, 'medecin'],
+  [/dentiste/i, 'dentiste'], [/hopital|urgence|clinique/i, 'hopital'], [/coiffeur|coiffure/i, 'coiffeur'], [/cafe|coffee/i, 'cafe'],
+  [/hotel|hebergement/i, 'hotel'], [/garage|reparation.*voiture|mecanicien/i, 'garage'], [/lavage.*auto|station.*lavage/i, 'lavageauto'],
+  [/opticien|lunettes/i, 'opticien'], [/commissariat|police/i, 'police'], [/mairie|hotel de ville/i, 'mairie'], [/cinema/i, 'cinema'],
+  [/musee/i, 'musee'], [/parc|jardin public/i, 'parc'], [/piscine/i, 'piscine']
 ];
 
 function json(data, status = 200) {
@@ -56,7 +88,7 @@ function detectCategory(q = '') {
 }
 
 function categoryLabel(cat) {
-  return ({toilettes:'Toilettes',laverie:'Laverie',eau:'Point d’eau',pharmacie:'Pharmacie',recharge:'Borne de recharge',parking:'Parking',carburant:'Station-service',supermarche:'Supermarché',veterinaire:'Vétérinaire',defibrillateur:'Défibrillateur',douche:'Douche',recyclage:'Point de recyclage',velo:'Service vélo',campingcar:'Service camping-car',restaurant:'Restaurant',banque:'Distributeur / banque',poste:'Bureau de poste',bibliotheque:'Bibliothèque',airejeux:'Aire de jeux',wifi:'Wi-Fi',gare:'Gare',centrecommercial:'Centre commercial'})[cat] || 'Lieu utile';
+  return ({toilettes:'Toilettes',laverie:'Laverie',eau:'Point d’eau',pharmacie:'Pharmacie',recharge:'Borne de recharge',parking:'Parking',carburant:'Station-service',supermarche:'Supermarché',veterinaire:'Vétérinaire',defibrillateur:'Défibrillateur',douche:'Douche',recyclage:'Point de recyclage',velo:'Service vélo',campingcar:'Service camping-car',restaurant:'Restaurant',boulangerie:'Boulangerie',banque:'Distributeur / banque',poste:'Bureau de poste',bibliotheque:'Bibliothèque',airejeux:'Aire de jeux',wifi:'Wi-Fi',gare:'Gare',centrecommercial:'Centre commercial',medecin:'Médecin',dentiste:'Dentiste',hopital:'Hôpital / clinique',coiffeur:'Coiffeur',cafe:'Café',hotel:'Hôtel',garage:'Garage automobile',lavageauto:'Lavage automobile',opticien:'Opticien',police:'Police / commissariat',mairie:'Mairie',cinema:'Cinéma',musee:'Musée',parc:'Parc',piscine:'Piscine'})[cat] || 'Lieu utile';
 }
 
 function distanceM(lat1, lon1, lat2, lon2) {
@@ -66,45 +98,123 @@ function distanceM(lat1, lon1, lat2, lon2) {
   return 2*R*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
 
+function simplifyQuestion(q='') {
+  return fold(q)
+    .replace(/\b(ou|comment|je|j|nous|on|peut|peux|pourrais|voudrais|veux|cherche|chercher|trouver|besoin|avoir|aller|faire|pres|proche|autour|moi|ici|maintenant|ouvert|ouverte|ouvertes|le|la|les|un|une|des|du|de|mon|ma|mes|svp|s il vous plait)\b/g,' ')
+    .replace(/\s+/g,' ').trim();
+}
+
 function overpassBody(lat, lon, radius, category, q) {
   const rules=SEARCH_RULES[category] || [];
   if (rules.length) {
     const body=rules.flatMap(rule=>[`node${rule}(around:${radius},${lat},${lon});`,`way${rule}(around:${radius},${lat},${lon});`,`relation${rule}(around:${radius},${lat},${lon});`]).join('');
-    return `[out:json][timeout:15];(${body});out center tags 100;`;
+    return `[out:json][timeout:10];(${body});out center tags 100;`;
   }
-  const safe=fold(q).split(' ').filter(w=>w.length>2).slice(0,4).join('.*').replace(/[\"']/g,'');
+  const safe=(simplifyQuestion(q)||fold(q)).split(' ').filter(w=>w.length>2).slice(0,4).join('.*').replace(/[\"']/g,'');
   if(!safe) return '';
-  return `[out:json][timeout:15];(node["name"~"${safe}",i](around:${radius},${lat},${lon});way["name"~"${safe}",i](around:${radius},${lat},${lon});relation["name"~"${safe}",i](around:${radius},${lat},${lon});node["brand"~"${safe}",i](around:${radius},${lat},${lon});way["brand"~"${safe}",i](around:${radius},${lat},${lon}););out center tags 100;`;
+  return `[out:json][timeout:10];(node["name"~"${safe}",i](around:${radius},${lat},${lon});way["name"~"${safe}",i](around:${radius},${lat},${lon});relation["name"~"${safe}",i](around:${radius},${lat},${lon});node["brand"~"${safe}",i](around:${radius},${lat},${lon});way["brand"~"${safe}",i](around:${radius},${lat},${lon}););out center tags 100;`;
+}
+
+function normalizeOverpass(data, lat, lon, category) {
+  return (data?.elements||[]).map(el=>{
+    const pLat=el.lat ?? el.center?.lat, pLon=el.lon ?? el.center?.lon, t=el.tags||{};
+    if(!Number.isFinite(pLat)||!Number.isFinite(pLon)) return null;
+    return {id:`osm-${el.type}-${el.id}`,source:'OpenStreetMap',title:t.name||t.brand||categoryLabel(category),category:category||'autre',lat:pLat,lon:pLon,distance:Math.round(distanceM(lat,lon,pLat,pLon)),address:[t['addr:housenumber'],t['addr:street'],t['addr:postcode'],t['addr:city']].filter(Boolean).join(' ')||null,opening_hours:t.opening_hours||null,wheelchair:t.wheelchair||null,fee:t.fee||null,website:t.website||t['contact:website']||null,phone:t.phone||t['contact:phone']||null,tags:t};
+  }).filter(Boolean);
+}
+
+async function queryOverpass(lat,lon,radius,category,q,env) {
+  const body=overpassBody(lat,lon,radius,category,q);
+  if(!body) return [];
+  const endpoints=[env.OVERPASS_URL,'https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'].filter(Boolean);
+  for(const endpoint of [...new Set(endpoints)]) {
+    try {
+      const r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded;charset=UTF-8','accept':'application/json','user-agent':'jai-besoin-de/1.0'},body:new URLSearchParams({data:body}),signal:AbortSignal.timeout(7000)});
+      if(!r.ok) continue;
+      const data=await r.json();
+      const results=normalizeOverpass(data,lat,lon,category).filter(x=>x.distance<=radius);
+      if(results.length) return results;
+    } catch {}
+  }
+  return [];
+}
+
+function photonAddress(p={}) {
+  return [p.housenumber,p.street,p.postcode,p.city||p.town||p.village||p.county].filter(Boolean).join(' ') || null;
+}
+
+function normalizePhoton(data,lat,lon,category,radius) {
+  return (data?.features||[]).map((f,i)=>{
+    const coords=f?.geometry?.coordinates||[], p=f?.properties||{};
+    const pLon=Number(coords[0]),pLat=Number(coords[1]);
+    if(!Number.isFinite(pLat)||!Number.isFinite(pLon)) return null;
+    const distance=Math.round(distanceM(lat,lon,pLat,pLon));
+    if(distance>radius) return null;
+    return {id:`photon-${p.osm_type||'x'}-${p.osm_id||i}`,source:'OpenStreetMap',title:p.name||p.street||p.city||categoryLabel(category),category:category||'autre',lat:pLat,lon:pLon,distance,address:photonAddress(p),opening_hours:null,wheelchair:null,fee:null,website:null,phone:null,tags:{osm_key:p.osm_key,osm_value:p.osm_value}};
+  }).filter(Boolean);
+}
+
+function bboxAround(lat,lon,radius) {
+  const dLat=radius/111000;
+  const dLon=radius/(111000*Math.max(.25,Math.cos(lat*Math.PI/180)));
+  return `${lon-dLon},${lat-dLat},${lon+dLon},${lat+dLat}`;
+}
+
+async function queryPhoton(lat,lon,radius,category,q) {
+  try {
+    const tag=PHOTON_TAGS[category];
+    let u;
+    if(tag) {
+      u=new URL(`${PHOTON_URL}/reverse`);
+      u.searchParams.set('lon',String(lon)); u.searchParams.set('lat',String(lat));
+      u.searchParams.set('radius',String(Math.max(1,Math.ceil(radius/1000))));
+      u.searchParams.set('limit','30'); u.searchParams.set('lang','fr'); u.searchParams.set('osm_tag',tag);
+    } else {
+      const cleaned=simplifyQuestion(q)||fold(q);
+      if(!cleaned) return [];
+      u=new URL(`${PHOTON_URL}/api/`);
+      u.searchParams.set('q',cleaned); u.searchParams.set('lat',String(lat)); u.searchParams.set('lon',String(lon));
+      u.searchParams.set('bbox',bboxAround(lat,lon,radius)); u.searchParams.set('limit','30'); u.searchParams.set('lang','fr'); u.searchParams.set('countrycode','FR');
+    }
+    const r=await fetch(u,{headers:{accept:'application/json','user-agent':'jai-besoin-de/1.0'},signal:AbortSignal.timeout(7000)});
+    if(!r.ok) return [];
+    return normalizePhoton(await r.json(),lat,lon,category,radius);
+  } catch { return []; }
+}
+
+function dedupeResults(items=[]) {
+  const seen=new Set();
+  return items.filter(x=>{
+    const key=`${fold(x.title)}|${Number(x.lat).toFixed(4)}|${Number(x.lon).toFixed(4)}`;
+    if(seen.has(key)) return false;
+    seen.add(key); return true;
+  }).sort((a,b)=>a.distance-b.distance);
 }
 
 async function searchFallback(url, env) {
   const lat=Number(url.searchParams.get('lat')), lon=Number(url.searchParams.get('lon'));
   if(!Number.isFinite(lat)||!Number.isFinite(lon)||!lat||!lon) return json({error:'Coordonnées manquantes'},400);
-  const radius=Math.max(100,Math.min(10000,Number(url.searchParams.get('radius'))||2500));
+  const requested=Math.max(100,Math.min(25000,Number(url.searchParams.get('radius'))||2500));
   const q=url.searchParams.get('q') || '';
   const category=url.searchParams.get('category') || detectCategory(q);
-  const body=overpassBody(lat,lon,radius,category,q);
-  if(!body) return json({category:'autre',label:`Résultats pour « ${q} »`,results:[],generated_at:new Date().toISOString()});
+  const radii=[requested,5000,10000,25000].filter((x,i,a)=>x>=requested&&a.indexOf(x)===i);
 
-  const endpoints=[env.OVERPASS_URL,'https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.nchc.org.tw/api/interpreter'].filter(Boolean);
-  let data=null;
-  for(const endpoint of [...new Set(endpoints)]) {
-    try {
-      const r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded;charset=UTF-8','accept':'application/json'},body:new URLSearchParams({data:body}),signal:AbortSignal.timeout(12000)});
-      if(!r.ok) continue;
-      const candidate=await r.json();
-      if(Array.isArray(candidate?.elements)){data=candidate;break;}
-    } catch {}
+  for(const radius of radii) {
+    const photon=await queryPhoton(lat,lon,radius,category,q);
+    if(photon.length) {
+      const results=dedupeResults(photon).slice(0,70);
+      const expanded=radius>requested;
+      return json({category:category||'autre',label:expanded?`${category?categoryLabel(category):`Résultats pour « ${q} »`} · jusqu’à ${radius/1000} km`:(category?categoryLabel(category):`Résultats pour « ${q} »`),results,generated_at:new Date().toISOString(),fallback:true,source:'Photon/OpenStreetMap',effective_radius:radius,auto_expanded:expanded});
+    }
+    const overpass=await queryOverpass(lat,lon,radius,category,q,env);
+    if(overpass.length) {
+      const results=dedupeResults(overpass).slice(0,70);
+      const expanded=radius>requested;
+      return json({category:category||'autre',label:expanded?`${category?categoryLabel(category):`Résultats pour « ${q} »`} · jusqu’à ${radius/1000} km`:(category?categoryLabel(category):`Résultats pour « ${q} »`),results,generated_at:new Date().toISOString(),fallback:true,source:'Overpass/OpenStreetMap',effective_radius:radius,auto_expanded:expanded});
+    }
   }
-  if(!data) return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results:[],generated_at:new Date().toISOString(),source_degraded:true});
 
-  const results=(data.elements||[]).map(el=>{
-    const pLat=el.lat ?? el.center?.lat, pLon=el.lon ?? el.center?.lon, t=el.tags||{};
-    if(!Number.isFinite(pLat)||!Number.isFinite(pLon)) return null;
-    return {id:`osm-${el.type}-${el.id}`,source:'OpenStreetMap',title:t.name||t.brand||categoryLabel(category),category:category||'autre',lat:pLat,lon:pLon,distance:Math.round(distanceM(lat,lon,pLat,pLon)),address:[t['addr:housenumber'],t['addr:street'],t['addr:city']].filter(Boolean).join(' ')||null,opening_hours:t.opening_hours||null,wheelchair:t.wheelchair||null,fee:t.fee||null,website:t.website||t['contact:website']||null,phone:t.phone||t['contact:phone']||null,tags:t};
-  }).filter(Boolean).sort((a,b)=>a.distance-b.distance).slice(0,70);
-
-  return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results,generated_at:new Date().toISOString(),fallback:true});
+  return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results:[],generated_at:new Date().toISOString(),source_degraded:false,effective_radius:25000,message:'Aucun résultat trouvé jusqu’à 25 km.'});
 }
 
 function parisParts(date = new Date()) {
@@ -167,16 +277,21 @@ export default {
     const url=new URL(request.url);
     if(url.pathname==='/api/contact'&&request.method==='POST') return contactEndpoint(request,env);
     if(url.pathname==='/api/places'&&request.method==='GET') {
+      let primaryData=null;
       try {
         const primary=await app.fetch(request,env,ctx);
         if(primary.ok) {
-          try {
-            const data=await primary.clone().json();
-            if(Array.isArray(data?.results)&&data.results.length>0) return primary;
-          } catch { return primary; }
+          try { primaryData=await primary.clone().json(); } catch {}
+          if(Array.isArray(primaryData?.results)&&primaryData.results.length>0) return primary;
         }
       } catch {}
-      return searchFallback(url,env);
+      const fallback=await searchFallback(url,env);
+      if(!fallback.ok) return fallback;
+      try {
+        const fd=await fallback.clone().json();
+        if(Array.isArray(primaryData?.results)&&primaryData.results.length) fd.results=dedupeResults([...primaryData.results,...fd.results]);
+        return json(fd);
+      } catch { return fallback; }
     }
     return app.fetch(request,env,ctx);
   },
