@@ -1,0 +1,419 @@
+name: Next departures camping and balanced layout
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/next-departures-camping-layout.yml
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add ZIP reader dependency
+        run: npm install fflate@^0.8.2 --save
+
+      - name: Upgrade site
+        shell: python
+        run: |
+          from pathlib import Path
+
+          # ---------------- Worker: scheduled departures from static GTFS ----------------
+          p=Path('src/worker.js')
+          s=p.read_text()
+          if "from 'fflate'" not in s:
+            s=s.replace("import GtfsRealtimeBindings from 'gtfs-realtime-bindings';", "import GtfsRealtimeBindings from 'gtfs-realtime-bindings';\nimport { unzipSync, strFromU8 } from 'fflate';")
+
+          marker="function textFold(v=''){ return String(v).toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,''); }"
+          if 'async function scheduledGtfsDepartures' not in s:
+            helpers=r'''
+function chooseStaticGtfsResource(ds){
+  const all=collectResources(ds);
+  const ranked=all.map(x=>{
+    const t=String(`${x.name} ${x.format} ${x.url}`).toLowerCase();
+    let score=0;
+    if(/gtfs/.test(t)) score+=80;
+    if(/\.zip(?:$|\?)/i.test(x.url)||/zip/.test(String(x.format).toLowerCase())) score+=30;
+    if(/theori|horaire|schedule|static|offre/.test(t)) score+=30;
+    if(/vehicle.?position|trip.?update|service.?alert|temps.?reel|realtime|protobuf|\.pb(?:$|\?)/.test(t)) score-=180;
+    return {x,score};
+  }).filter(v=>v.score>40).sort((a,b)=>b.score-a.score);
+  return ranked[0]?.x||null;
+}
+
+function tinyHash(v=''){
+  let h=2166136261;
+  for(let i=0;i<v.length;i++){h^=v.charCodeAt(i);h=Math.imul(h,16777619);}
+  return (h>>>0).toString(36);
+}
+
+async function gtfsZipBytes(url){
+  const cache=caches.default;
+  const key=new Request(`https://cache.local/gtfs-static/${tinyHash(url)}`);
+  let hit=await cache.match(key);
+  if(!hit){
+    const src=await fetch(url,{headers:{accept:'application/zip,application/octet-stream'}});
+    if(!src.ok) throw new Error(`GTFS ${src.status}`);
+    hit=new Response(await src.arrayBuffer(),{headers:{'cache-control':'public,max-age=21600'}});
+    await cache.put(key,hit.clone());
+  }
+  return new Uint8Array(await hit.arrayBuffer());
+}
+
+function parseGtfsCsv(text){
+  const rows=[]; let row=[],field='',quoted=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(c==='"'){
+      if(quoted&&text[i+1]==='"'){field+='"';i++;} else quoted=!quoted;
+    }else if(c===','&&!quoted){row.push(field);field='';}
+    else if((c==='\n'||c==='\r')&&!quoted){
+      if(c==='\r'&&text[i+1]==='\n')i++;
+      row.push(field);field='';
+      if(row.some(v=>v!=='')) rows.push(row);
+      row=[];
+    }else field+=c;
+  }
+  if(field||row.length){row.push(field);rows.push(row);}
+  if(!rows.length)return [];
+  const headers=rows.shift().map((h,i)=>String(h).replace(i===0?/^\uFEFF/:'','').trim());
+  return rows.map(values=>Object.fromEntries(headers.map((h,i)=>[h,values[i]??''])));
+}
+
+function gtfsFileText(files,name){
+  const wanted=name.toLowerCase();
+  const key=Object.keys(files).find(k=>k.split('/').pop().toLowerCase()===wanted);
+  return key?strFromU8(files[key]):'';
+}
+
+function gtfsClockMinutes(v=''){
+  const m=String(v).match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  return m?Number(m[1])*60+Number(m[2]):null;
+}
+
+function gtfsServiceDate(offset){
+  const now=parisParts();
+  const d=new Date(Date.UTC(Number(now.year),Number(now.month)-1,Number(now.day)+offset,12));
+  const y=d.getUTCFullYear(),m=String(d.getUTCMonth()+1).padStart(2,'0'),day=String(d.getUTCDate()).padStart(2,'0');
+  const weekdays=['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  const labels=['dimanche','lundi','mardi','mercredi','jeudi','vendredi','samedi'];
+  return {key:`${y}${m}${day}`,iso:`${y}-${m}-${day}`,weekday:weekdays[d.getUTCDay()],label:labels[d.getUTCDay()]};
+}
+
+function gtfsServiceActive(serviceId,date,calendar,exceptions){
+  const ex=exceptions.get(`${date.key}|${serviceId}`);
+  if(ex===1)return true;
+  if(ex===2)return false;
+  const c=calendar.get(serviceId);
+  if(!c)return false;
+  if(c.start_date&&date.key<c.start_date)return false;
+  if(c.end_date&&date.key>c.end_date)return false;
+  return String(c[date.weekday]||'0')==='1';
+}
+
+async function scheduledGtfsDepartures(dataset,lat,lon,radius=1500){
+  const resource=chooseStaticGtfsResource(dataset);
+  if(!resource)return [];
+  const rounded=`${Number(lat).toFixed(3)}/${Number(lon).toFixed(3)}/${Math.round(radius/250)*250}`;
+  const cache=caches.default;
+  const cacheKey=new Request(`https://cache.local/gtfs-departures/${tinyHash(resource.url)}/${rounded}`);
+  const cached=await cache.match(cacheKey);
+  if(cached)return cached.json();
+
+  const bytes=await gtfsZipBytes(resource.url);
+  const files=unzipSync(bytes,{filter:f=>/(^|\/)(stops|stop_times|trips|routes|calendar|calendar_dates)\.txt$/i.test(f.name)});
+  const stops=parseGtfsCsv(gtfsFileText(files,'stops.txt'));
+  const nearby=stops.map(st=>{
+    const slat=Number(st.stop_lat),slon=Number(st.stop_lon);
+    if(!Number.isFinite(slat)||!Number.isFinite(slon))return null;
+    const distance=Math.round(distanceM(lat,lon,slat,slon));
+    return {...st,distance};
+  }).filter(Boolean).filter(st=>st.distance<=radius&&String(st.location_type||'0')!=='1').sort((a,b)=>a.distance-b.distance).slice(0,35);
+  if(!nearby.length)return [];
+
+  const stopMap=new Map(nearby.map(st=>[String(st.stop_id),st]));
+  const trips=new Map(parseGtfsCsv(gtfsFileText(files,'trips.txt')).map(t=>[String(t.trip_id),t]));
+  const routes=new Map(parseGtfsCsv(gtfsFileText(files,'routes.txt')).map(r=>[String(r.route_id),r]));
+  const calendar=new Map(parseGtfsCsv(gtfsFileText(files,'calendar.txt')).map(c=>[String(c.service_id),c]));
+  const exceptions=new Map();
+  for(const e of parseGtfsCsv(gtfsFileText(files,'calendar_dates.txt'))){
+    exceptions.set(`${e.date}|${e.service_id}`,Number(e.exception_type));
+  }
+  const stopTimes=parseGtfsCsv(gtfsFileText(files,'stop_times.txt')).filter(st=>stopMap.has(String(st.stop_id)));
+  const pp=parisParts();
+  const nowMinute=Number(pp.hour)*60+Number(pp.minute||0);
+  const bestByTripDay=new Map();
+
+  for(let serviceOffset=0;serviceOffset<8;serviceOffset++){
+    const date=gtfsServiceDate(serviceOffset);
+    for(const st of stopTimes){
+      const trip=trips.get(String(st.trip_id));
+      if(!trip||!gtfsServiceActive(String(trip.service_id),date,calendar,exceptions))continue;
+      const tm=gtfsClockMinutes(st.departure_time||st.arrival_time);
+      if(tm==null)continue;
+      const absolute=serviceOffset*1440+tm;
+      if(absolute<nowMinute||absolute>nowMinute+7*1440)continue;
+      const actualDayOffset=Math.floor(absolute/1440);
+      const clock=absolute%1440;
+      const hh=String(Math.floor(clock/60)).padStart(2,'0'),mm=String(clock%60).padStart(2,'0');
+      const stop=stopMap.get(String(st.stop_id));
+      const route=routes.get(String(trip.route_id))||{};
+      const key=`${trip.trip_id}|${date.key}`;
+      const item={
+        trip_id:String(trip.trip_id),route_id:String(trip.route_id||''),line:String(route.route_short_name||route.route_long_name||trip.route_id||'?'),
+        headsign:String(trip.trip_headsign||route.route_long_name||''),stop_id:String(st.stop_id),stop_name:String(stop.stop_name||'Arrêt proche'),
+        stop_distance:Number(stop.distance||0),departure_time:`${hh}:${mm}`,minutes_until:absolute-nowMinute,day_offset:actualDayOffset,
+        day_label:actualDayOffset===0?'Aujourd’hui':actualDayOffset===1?'Demain':gtfsServiceDate(actualDayOffset).label,
+        service_date:date.iso,scheduled:true
+      };
+      const prev=bestByTripDay.get(key);
+      if(!prev||item.stop_distance<prev.stop_distance)bestByTripDay.set(key,item);
+    }
+  }
+  const departures=[...bestByTripDay.values()].sort((a,b)=>a.minutes_until-b.minutes_until||a.stop_distance-b.stop_distance).slice(0,14);
+  const response=json(departures,200,{'cache-control':'public,max-age=300'});
+  await cache.put(cacheKey,response.clone());
+  return departures;
+}
+'''
+            s=s.replace(marker,helpers+'\n'+marker)
+
+          old="""    const resources=chooseRealtimeResources(ds);
+    if(!resources.vehicle) continue;"""
+          new="""    const resources=chooseRealtimeResources(ds);
+    const staticGtfs=chooseStaticGtfsResource(ds);
+    if(!resources.vehicle && !staticGtfs) continue;"""
+          s=s.replace(old,new)
+          s=s.replace("if(nearLeMans && /setram|le mans/.test(hay)) score+=300;", "if(nearLeMans && /setram|le mans/.test(hay)) score+=300;\n    if(staticGtfs) score+=25;")
+
+          start=s.index('async function transportEndpoint(env,url){')
+          end=s.index('\n\nfunction parisParts',start)
+          transport=r'''async function transportEndpoint(env,url){
+  const lat=toNum(url.searchParams.get('lat')),lon=toNum(url.searchParams.get('lon')),radius=clamp(toNum(url.searchParams.get('radius'),1500),500,5000);
+  if(!lat||!lon)return json({error:'Coordonnées manquantes'},400);
+  try{
+    const found=await findRealtimeDataset(env,lat,lon);
+    if(!found.dataset)return json({network:null,message:'Aucun réseau local compatible détecté pour cette zone.',vehicles:[],departures:[],alerts:[],coverage:'catalogue-only',location:found.commune});
+    const resources=chooseRealtimeResources(found.dataset);
+    const [vf,tf,af,departures]=await Promise.all([
+      decodeGtfsRt(resources.vehicle?.url).catch(()=>null),
+      decodeGtfsRt(resources.trip?.url).catch(()=>null),
+      decodeGtfsRt(resources.alert?.url).catch(()=>null),
+      scheduledGtfsDepartures(found.dataset,lat,lon,Math.min(radius,1500)).catch(()=>[])
+    ]);
+    const trips=new Map();
+    for(const e of tf?.entity||[]) if(e.tripUpdate?.trip?.tripId) trips.set(e.tripUpdate.trip.tripId,e.tripUpdate);
+    const now=Date.now()/1000;
+    const vehicles=[];
+    for(const e of vf?.entity||[]){
+      const vp=e.vehicle;
+      if(!vp?.position)continue;
+      const vlat=Number(vp.position.latitude),vlon=Number(vp.position.longitude);
+      const dist=Math.round(distanceM(lat,lon,vlat,vlon));
+      if(dist>radius)continue;
+      const tripId=vp.trip?.tripId||null, routeId=vp.trip?.routeId||null, tu=tripId?trips.get(tripId):null;
+      let nextTime=null,nextStopId=vp.stopId||null;
+      if(tu?.stopTimeUpdate?.length){
+        const seq=vp.currentStopSequence||0;
+        const st=tu.stopTimeUpdate.find(x=>!seq||Number(x.stopSequence)>=Number(seq))||tu.stopTimeUpdate[0];
+        nextTime=epochSeconds(st?.arrival?.time)||epochSeconds(st?.departure?.time)||null;
+        nextStopId=st?.stopId||nextStopId;
+      }
+      vehicles.push({id:e.id||vp.vehicle?.id||tripId||crypto.randomUUID(),line:routeId||'?',trip_id:tripId,vehicle:vp.vehicle?.label||vp.vehicle?.id||null,lat:vlat,lon:vlon,distance:dist,next_stop_id:nextStopId,eta_minutes:nextTime?Math.max(0,Math.round((nextTime-now)/60)):null,status:vp.currentStatus||null,timestamp:epochSeconds(vp.timestamp)});
+    }
+    vehicles.sort((a,b)=>a.distance-b.distance);
+    const alerts=(af?.entity||[]).filter(e=>e.alert).slice(0,30).map(e=>({
+      id:e.id,title:e.alert.headerText?.translation?.[0]?.text||'Information trafic',description:e.alert.descriptionText?.translation?.[0]?.text||'',effect:e.alert.effect||null,
+      route_ids:[...new Set((e.alert.informedEntity||[]).map(x=>x.routeId).filter(Boolean))]
+    }));
+    return json({network:found.dataset.title||found.dataset.slug||'Réseau local',coverage:resources.vehicle?'realtime+schedule':'schedule',location:found.commune,vehicles:vehicles.slice(0,20),departures,alerts,resources:{vehicle:Boolean(resources.vehicle),trip:Boolean(resources.trip),alert:Boolean(resources.alert),static:Boolean(chooseStaticGtfsResource(found.dataset))},generated_at:new Date().toISOString()});
+  }catch(err){
+    return json({network:null,coverage:'degraded',vehicles:[],departures:[],alerts:[],message:'Les données transport sont momentanément indisponibles.',details:String(err.message||err)},200);
+  }
+}'''
+          s=s[:start]+transport+s[end:]
+          p.write_text(s)
+
+          # ---------------- Search: camping-car and high vehicle parkings ----------------
+          p=Path('src/entry.js')
+          s=p.read_text()
+          s=s.replace("campingcar: ['[tourism=caravan_site]', '[amenity=sanitary_dump_station]'],", "campingcar: ['[tourism=caravan_site]', '[amenity=sanitary_dump_station]', '[amenity=parking][motorhome=yes]', '[amenity=parking][caravan=yes]', '[amenity=parking][hgv=yes]'],\n  parkinghaut: ['[amenity=parking][motorhome=yes]', '[amenity=parking][caravan=yes]', '[amenity=parking][hgv=yes]', '[amenity=parking][maxheight]', '[amenity=parking][parking=surface]'],")
+          s=s.replace("[/camping.?car|vidange|cassette wc/i, 'campingcar']", "[/camping.?car|vidange|cassette wc/i, 'campingcar'], [/parking.*(haut|hauteur|grand gabarit)|vehicule.*haut|fourgon.*haut/i, 'parkinghaut']")
+          s=s.replace("campingcar:'Service camping-car'", "campingcar:'Camping-car : aires et parkings',parkinghaut:'Parking véhicule haut'")
+
+          # Filter and describe high-vehicle parking results.
+          needle="""      const results=normalizeOverpass(data,lat,lon,category).filter(x=>x.distance<=radius);
+      if(results.length) return results;"""
+          replacement="""      let results=normalizeOverpass(data,lat,lon,category).filter(x=>x.distance<=radius);
+      if(category==='parkinghaut'){
+        results=results.filter(x=>{
+          const t=x.tags||{};
+          const raw=String(t.maxheight||t['maxheight:physical']||'').replace(',','.').toLowerCase();
+          const mh=/none|default|unlimited/.test(raw)?99:(parseFloat(raw)||null);
+          const explicit=['yes','designated','permissive'].includes(String(t.motorhome||t.caravan||t.hgv||'').toLowerCase());
+          const surface=String(t.parking||'').toLowerCase()==='surface';
+          if(mh!=null&&mh<3.0)return false;
+          x.height_note=explicit?'Camping-car ou grand gabarit indiqué comme accepté':mh!=null&&mh<90?`Hauteur renseignée : ${mh.toFixed(1)} m`:surface?'Parking extérieur, hauteur à vérifier à l’entrée':'Accès grand gabarit à vérifier';
+          return explicit||mh!=null||surface;
+        });
+      }
+      if(results.length) return results;"""
+          if needle in s:s=s.replace(needle,replacement)
+
+          # Special categories should use Overpass so high-vehicle tags are not lost to the faster Photon response.
+          loop_old="""    const photonPromise=queryPhoton(lat,lon,radius,category,q);
+    const overpassPromise=queryOverpass(lat,lon,radius,category,q,env);
+    const first=await Promise.race([
+      photonPromise.then(v=>({source:'photon',v})),
+      overpassPromise.then(v=>({source:'overpass',v}))
+    ]);
+    let results=dedupeResults(first.v||[]).slice(0,70);
+    if(!results.length){
+      const other=first.source==='photon'?await overpassPromise:await photonPromise;
+      results=dedupeResults(other||[]).slice(0,70);
+    }"""
+          loop_new="""    const photonPromise=queryPhoton(lat,lon,radius,category,q);
+    const overpassPromise=queryOverpass(lat,lon,radius,category,q,env);
+    let results=[];
+    if(category==='campingcar'||category==='parkinghaut'){
+      results=dedupeResults(await overpassPromise).slice(0,70);
+    }else{
+      const first=await Promise.race([
+        photonPromise.then(v=>({source:'photon',v})),
+        overpassPromise.then(v=>({source:'overpass',v}))
+      ]);
+      results=dedupeResults(first.v||[]).slice(0,70);
+      if(!results.length){
+        const other=first.source==='photon'?await overpassPromise:await photonPromise;
+        results=dedupeResults(other||[]).slice(0,70);
+      }
+    }"""
+          if loop_old in s:s=s.replace(loop_old,loop_new)
+
+          # Prefer fallback for camping categories, since worker's legacy search has fewer detailed tags.
+          route_old="""    if(url.pathname==='/api/places'&&request.method==='GET') {
+    const fallbackPromise=searchFallback(url,env);"""
+          route_new="""    if(url.pathname==='/api/places'&&request.method==='GET') {
+    const requestedCategory=url.searchParams.get('category')||detectCategory(url.searchParams.get('q')||'');
+    if(requestedCategory==='campingcar'||requestedCategory==='parkinghaut') return searchFallback(url,env);
+    const fallbackPromise=searchFallback(url,env);"""
+          if route_old in s:s=s.replace(route_old,route_new)
+          p.write_text(s)
+
+          # ---------------- Client: next departures, richer camping info ----------------
+          p=Path('public/app.js')
+          s=p.read_text()
+          s=s.replace("campingcar:'🚐'", "campingcar:'🚐',parkinghaut:'⬆️'")
+          s=s.replace("${p.opening_hours?`<br>${escapeHtml(p.opening_hours)}`:''}", "${p.opening_hours?`<br>${escapeHtml(p.opening_hours)}`:''}${p.height_note?`<br><strong>${escapeHtml(p.height_note)}</strong>`:''}")
+
+          start=s.index('async function loadTransport(){')
+          end=s.index('\n\nasync function loadEvents(){',start)
+          new_transport=r'''function departureWhen(d){
+  const t=d.departure_time||'';
+  if(Number(d.day_offset)===0){
+    if(Number(d.minutes_until)<=90)return `${Math.max(0,Number(d.minutes_until))} min`;
+    return `Aujourd’hui ${t}`;
+  }
+  if(Number(d.day_offset)===1)return `Demain ${t}`;
+  return `${d.day_label||'À venir'} ${t}`;
+}
+
+async function loadTransport(){
+  $('#transportBody').innerHTML='<div class="skeleton"></div><div class="skeleton"></div>';
+  try{
+    const localRadius=1500;
+    const d=await api(`/api/transport/nearby?lat=${state.lat}&lon=${state.lon}&radius=${localRadius}`);
+    const chunks=[];
+    const cleanTransportText=v=>{const x=document.createElement('textarea');x.innerHTML=String(v||'').replace(/&amp;nbsp;|&nbsp;/gi,' ');return x.value.replace(/\s+/g,' ').trim();};
+    const departures=(d.departures||[]).slice(0,10);
+    const visibleRouteIds=new Set(departures.map(x=>String(x.route_id||'')));
+    $('#transport h2').textContent='Prochains départs autour de toi';
+
+    for(const dep of departures){
+      const direction=dep.headsign?`vers ${escapeHtml(dep.headsign)}`:'prochain départ';
+      chunks.push(`<div class="departure-row"><div class="line-badge">${escapeHtml(dep.line||'?')}</div><div class="departure-main"><b>${direction}</b><small>${escapeHtml(dep.stop_name||'Arrêt proche')} · ${formatDistance(dep.stop_distance||0)}</small></div><div class="departure-time">${escapeHtml(departureWhen(dep))}<small>horaire prévu</small></div></div>`);
+    }
+
+    if(!departures.length){
+      const byLine=new Map();
+      for(const v of (d.vehicles||[]).sort((a,b)=>a.distance-b.distance)){
+        const line=String(v.line||'?');
+        if(!byLine.has(line))byLine.set(line,v);
+      }
+      for(const v of [...byLine.values()].slice(0,6)){
+        chunks.push(`<div class="departure-row"><div class="line-badge">${escapeHtml(v.line||'?')}</div><div class="departure-main"><b>Ligne ${escapeHtml(v.line||'?')} près de toi</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class="departure-time">${v.eta_minutes!=null?`${v.eta_minutes} min`:'En circulation'}<small>temps réel</small></div></div>`);
+      }
+    }
+
+    const localAlerts=(d.alerts||[]).filter(a=>!visibleRouteIds.size||(a.route_ids||[]).some(r=>visibleRouteIds.has(String(r)))).slice(0,3);
+    for(const a of localAlerts){
+      const title=cleanTransportText(a.title),desc=cleanTransportText(a.description);
+      chunks.push(`<div class="alert"><b>${escapeHtml(title)}</b>${desc?`<br>${escapeHtml(desc).slice(0,200)}`:''}</div>`);
+    }
+    $('#transportBody').innerHTML=chunks.join('')||`<div class="empty">Aucun départ trouvé dans les 7 prochains jours à moins de 1,5 km${d.location?.nom?` autour de ${escapeHtml(d.location.nom)}`:''}.</div>`;
+  }catch(e){ $('#transportBody').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`; }
+}'''
+          s=s[:start]+new_transport+s[end:]
+          p.write_text(s)
+
+          # ---------------- Page copy and balanced layout ----------------
+          p=Path('public/index.html')
+          s=p.read_text()
+          s=s.replace('<button data-cat="campingcar"><span>🚐</span><b>Camping-car</b><small>Aires, vidange</small></button>', '<button data-cat="campingcar"><span>🚐</span><b>Camping-car</b><small>Aires, vidange, parkings hauts</small></button>')
+          p.write_text(s)
+
+          p=Path('public/app.css')
+          s=p.read_text()
+          if 'balanced-dashboard-v2' not in s:
+            s += r'''
+
+/* balanced-dashboard-v2 */
+.dashboard{grid-template-columns:repeat(12,minmax(0,1fr));gap:18px;align-items:start}
+.map-panel{grid-column:span 8}
+.transport-panel{grid-column:span 4;min-height:0}
+.events-panel{grid-column:span 4;min-height:330px}
+#demarches{grid-column:span 4;min-height:330px}
+#plans{grid-column:span 4;min-height:330px}
+.community-panel{grid-column:1/-1}
+.panel{padding:20px;border-radius:20px;box-shadow:0 8px 22px rgba(54,32,35,.045)}
+.panel-head{margin-bottom:12px}
+.transport-panel #transportBody{max-height:430px;overflow:auto;padding-right:4px}
+.departure-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--line)}
+.departure-row:last-child{border-bottom:0}
+.departure-main{min-width:0}.departure-main b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.departure-main small{display:block;margin-top:3px;color:var(--muted);font-size:11px}
+.departure-time{text-align:right;color:var(--red);font-size:16px;font-weight:900;white-space:nowrap}.departure-time small{display:block;color:var(--muted);font-size:9px;font-weight:700;margin-top:2px}
+@media(min-width:761px) and (max-width:1120px){
+  .dashboard{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+  .map-panel{grid-column:1/-1}
+  .transport-panel,.events-panel,#demarches,#plans{grid-column:span 1}
+  .community-panel{grid-column:1/-1}
+  .map-wrap{height:390px!important}
+  .transport-panel #transportBody{max-height:360px}
+  .events-panel,#demarches,#plans{min-height:300px}
+}
+@media(max-width:760px){
+  .dashboard{display:block}
+  .panel{padding:15px}
+  .departure-row{grid-template-columns:42px minmax(0,1fr) auto;gap:8px}
+  .departure-time{font-size:14px}
+}
+'''
+          p.write_text(s)
+
+      - name: Commit upgrade
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json src/worker.js src/entry.js public/app.js public/index.html public/app.css
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+          else
+            git commit -m "Add next nearby departures high vehicle parking and balanced cards"
+            git push
+          fi
