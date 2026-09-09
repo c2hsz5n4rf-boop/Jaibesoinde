@@ -17,6 +17,14 @@ CREATE TABLE IF NOT EXISTS contributions (
 CREATE INDEX IF NOT EXISTS idx_contributions_geo ON contributions(lat, lon);
 CREATE INDEX IF NOT EXISTS idx_contributions_category ON contributions(category);
 
+CREATE TABLE IF NOT EXISTS contribution_photos (
+  photo_key TEXT PRIMARY KEY,
+  content_type TEXT NOT NULL,
+  data BLOB NOT NULL,
+  size INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS search_terms (
   term TEXT PRIMARY KEY,
   count INTEGER NOT NULL DEFAULT 1,

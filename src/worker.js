@@ -185,11 +185,18 @@ async function contributionEndpoint(request, env) {
   if (!title || !category || !lat || !lon) return json({error:'Titre, catégorie et position requis'},400);
   let photoKey = null;
   const photo = form.get('photo');
-  if (photo && typeof photo === 'object' && photo.size && env.PHOTOS) {
-    if (photo.size > 8*1024*1024) return json({error:'Photo limitée à 8 Mo'},413);
-    const ext = (photo.type || 'image/jpeg').split('/')[1]?.replace(/[^a-z0-9]/gi,'') || 'jpg';
+  if (photo && typeof photo === 'object' && photo.size) {
+    if (photo.size > 900*1024) return json({error:'La photo doit faire moins de 900 Ko après compression.'},413);
+    const type = String(photo.type || 'image/jpeg').startsWith('image/') ? String(photo.type || 'image/jpeg') : 'image/jpeg';
+    const ext = type.split('/')[1]?.replace(/[^a-z0-9]/gi,'') || 'jpg';
     photoKey = `${new Date().toISOString().slice(0,10)}/${crypto.randomUUID()}.${ext}`;
-    await env.PHOTOS.put(photoKey, await photo.arrayBuffer(), { httpMetadata:{ contentType:photo.type || 'image/jpeg' }, customMetadata:{ source:'community' } });
+    const bytes = await photo.arrayBuffer();
+    if (env.PHOTOS) {
+      await env.PHOTOS.put(photoKey, bytes, { httpMetadata:{ contentType:type }, customMetadata:{ source:'community' } });
+    } else {
+      await env.DB.prepare(`INSERT INTO contribution_photos(photo_key,content_type,data,size) VALUES(?1,?2,?3,?4)`)
+        .bind(photoKey,type,bytes,bytes.byteLength).run();
+    }
   }
   const result = await env.DB.prepare(`INSERT INTO contributions(title,category,description,lat,lon,photo_key,proof_status) VALUES(?1,?2,?3,?4,?5,?6,?7)`)
     .bind(title,category,description,lat,lon,photoKey,photoKey?'photo':'community').run();
@@ -197,14 +204,23 @@ async function contributionEndpoint(request, env) {
 }
 
 async function photoEndpoint(env, key) {
-  if (!env.PHOTOS) return new Response('R2 non configuré',{status:404});
-  const obj = await env.PHOTOS.get(key);
-  if (!obj) return new Response('Introuvable',{status:404});
-  const headers = new Headers();
-  obj.writeHttpMetadata(headers);
-  headers.set('etag',obj.httpEtag);
-  headers.set('cache-control','public, max-age=86400');
-  return new Response(obj.body,{headers});
+  if (env.PHOTOS) {
+    const obj = await env.PHOTOS.get(key);
+    if (obj) {
+      const headers = new Headers();
+      obj.writeHttpMetadata(headers);
+      headers.set('etag',obj.httpEtag);
+      headers.set('cache-control','public, max-age=86400');
+      return new Response(obj.body,{headers});
+    }
+  }
+  if (!env.DB) return new Response('Introuvable',{status:404});
+  const row = await env.DB.prepare(`SELECT content_type,data,size FROM contribution_photos WHERE photo_key=?1`).bind(key).first();
+  if (!row || !row.data) return new Response('Introuvable',{status:404});
+  let body = row.data;
+  if (Array.isArray(body)) body = new Uint8Array(body);
+  else if (body && body.buffer && !(body instanceof ArrayBuffer)) body = body.buffer;
+  return new Response(body,{headers:{'content-type':row.content_type||'image/jpeg','cache-control':'public, max-age=86400','content-length':String(row.size||'')}});
 }
 
 async function reverseCommune(lat, lon) {

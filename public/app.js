@@ -155,12 +155,50 @@ const dialog=$('#contributionDialog');
 $$('[data-open-contribution]').forEach(b=>b.addEventListener('click',()=>{track('rubrique','contribution');dialog.showModal();}));
 $('[data-close-dialog]').addEventListener('click',()=>dialog.close());
 $('#refreshContribPosition').addEventListener('click',async()=>{const ok=await requestLocation();$('#contribPosition').textContent=ok?'Position actualisée':'Position actuelle conservée';});
+async function compressContributionPhoto(file){
+  if(!(file instanceof File) || !file.size || !String(file.type||'').startsWith('image/')) return file;
+  if(file.size <= 350*1024) return file;
+  const url=URL.createObjectURL(file);
+  try{
+    const img=new Image();
+    await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=reject;img.src=url;});
+    const maxDim=1200;
+    const scale=Math.min(1,maxDim/Math.max(img.naturalWidth||1,img.naturalHeight||1));
+    const canvas=document.createElement('canvas');
+    canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));
+    canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));
+    const ctx=canvas.getContext('2d',{alpha:false});
+    ctx.drawImage(img,0,0,canvas.width,canvas.height);
+    let quality=.74, blob=null;
+    const makeBlob=q=>new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',q));
+    blob=await makeBlob(quality);
+    while(blob && blob.size>350*1024 && quality>.42){quality-=.08;blob=await makeBlob(quality);}
+    if(!blob) return file;
+    return new File([blob],'preuve.jpg',{type:'image/jpeg',lastModified:Date.now()});
+  } finally { URL.revokeObjectURL(url); }
+}
+
 $('#contributionForm').addEventListener('submit',async e=>{
   e.preventDefault();
-  const status=$('#contributionStatus'); status.textContent='Envoi…';
+  const status=$('#contributionStatus');
   const fd=new FormData(e.currentTarget); fd.set('lat',state.lat); fd.set('lon',state.lon);
-  try{ const r=await fetch('/api/contributions',{method:'POST',body:fd}); const d=await r.json(); if(!r.ok)throw new Error(d.error||'Erreur'); status.textContent='Information ajoutée. Merci.'; track('contribution','information_ajoutee'); e.currentTarget.reset(); setTimeout(()=>{dialog.close();status.textContent='';searchPlaces(state.q||state.category,!state.q);},900); }
-  catch(err){status.textContent=err.message;}
+  try{
+    const original=fd.get('photo');
+    if(original instanceof File && original.size){
+      status.textContent='Compression de la photo…';
+      const compressed=await compressContributionPhoto(original);
+      if(compressed.size>900*1024) throw new Error('Photo trop volumineuse. Choisis une autre photo.');
+      fd.set('photo',compressed,compressed.name||'preuve.jpg');
+    }
+    status.textContent='Envoi…';
+    const r=await fetch('/api/contributions',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error||'Erreur');
+    status.textContent='Information ajoutée. Merci.';
+    track('contribution','information_ajoutee');
+    e.currentTarget.reset();
+    setTimeout(()=>{dialog.close();status.textContent='';searchPlaces(state.q||state.category,!state.q);},900);
+  } catch(err){status.textContent=err.message;}
 });
 
 
