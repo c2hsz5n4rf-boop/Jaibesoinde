@@ -1,0 +1,167 @@
+name: Repair speed map and local transport
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/repair-speed-map-local-transport.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch search, map and transport
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          # 1) Search: one radius only, sources in parallel, no long wait on primary source.
+          p = Path('src/entry.js')
+          s = p.read_text()
+          s = s.replace("signal:AbortSignal.timeout(7000)", "signal:AbortSignal.timeout(3500)")
+          s = s.replace("const radii=[requested,5000,10000,25000].filter((x,i,a)=>x>=requested&&a.indexOf(x)===i);", "const radii=[requested];")
+          old_loop = '''  for(const radius of radii) {
+            const photon=await queryPhoton(lat,lon,radius,category,q);
+            if(photon.length) {
+              const results=dedupeResults(photon).slice(0,70);
+              const expanded=radius>requested;
+              return json({category:category||'autre',label:expanded?`${category?categoryLabel(category):`Résultats pour « ${q} »`} · jusqu’à ${radius/1000} km`:(category?categoryLabel(category):`Résultats pour « ${q} »`),results,generated_at:new Date().toISOString(),fallback:true,source:'Photon/OpenStreetMap',effective_radius:radius,auto_expanded:expanded});
+            }
+            const overpass=await queryOverpass(lat,lon,radius,category,q,env);
+            if(overpass.length) {
+              const results=dedupeResults(overpass).slice(0,70);
+              const expanded=radius>requested;
+              return json({category:category||'autre',label:expanded?`${category?categoryLabel(category):`Résultats pour « ${q} »`} · jusqu’à ${radius/1000} km`:(category?categoryLabel(category):`Résultats pour « ${q} »`),results,generated_at:new Date().toISOString(),fallback:true,source:'Overpass/OpenStreetMap',effective_radius:radius,auto_expanded:expanded});
+            }
+          }
+
+          return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results:[],generated_at:new Date().toISOString(),source_degraded:false,effective_radius:25000,message:'Aucun résultat trouvé jusqu’à 25 km.'});'''
+          new_loop = '''  for(const radius of radii) {
+            const [photon,overpass]=await Promise.all([
+              queryPhoton(lat,lon,radius,category,q),
+              queryOverpass(lat,lon,radius,category,q,env)
+            ]);
+            const results=dedupeResults([...(photon||[]),...(overpass||[])]).slice(0,70);
+            if(results.length) return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results,generated_at:new Date().toISOString(),fallback:true,source:'OpenStreetMap',effective_radius:radius,auto_expanded:false});
+          }
+
+          return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results:[],generated_at:new Date().toISOString(),source_degraded:false,effective_radius:requested,message:`Aucun résultat trouvé dans un rayon de ${requested>=1000?(requested/1000)+' km':requested+' m'}. Essaie une distance plus grande.`});'''
+          if old_loop not in s:
+            raise SystemExit('search loop pattern not found')
+          s = s.replace(old_loop, new_loop)
+
+          old_places = '''    if(url.pathname==='/api/places'&&request.method==='GET') {
+              let primaryData=null;
+              try {
+                const primary=await app.fetch(request,env,ctx);
+                if(primary.ok) {
+                  try { primaryData=await primary.clone().json(); } catch {}
+                  if(Array.isArray(primaryData?.results)&&primaryData.results.length>0) return primary;
+                }
+              } catch {}
+              const fallback=await searchFallback(url,env);
+              if(!fallback.ok) return fallback;
+              try {
+                const fd=await fallback.clone().json();
+                if(Array.isArray(primaryData?.results)&&primaryData.results.length) fd.results=dedupeResults([...primaryData.results,...fd.results]);
+                return json(fd);
+              } catch { return fallback; }
+            }'''
+          new_places = '''    if(url.pathname==='/api/places'&&request.method==='GET') {
+              const fallbackPromise=searchFallback(url,env);
+              const primaryPromise=(async()=>{
+                try {
+                  const primary=await app.fetch(request,env,ctx);
+                  if(!primary.ok) return null;
+                  const data=await primary.clone().json().catch(()=>null);
+                  return Array.isArray(data?.results)&&data.results.length>0?primary:null;
+                } catch { return null; }
+              })();
+              const first=await Promise.race([
+                fallbackPromise.then(r=>({kind:'fallback',r})),
+                primaryPromise.then(r=>({kind:'primary',r}))
+              ]);
+              if(first.kind==='primary'&&first.r) return first.r;
+              if(first.kind==='fallback') return first.r;
+              return fallbackPromise;
+            }'''
+          if old_places not in s:
+            raise SystemExit('places routing pattern not found')
+          s = s.replace(old_places, new_places)
+          p.write_text(s)
+
+          # 2) Transport dataset selection: stop matching on loose department numbers.
+          p = Path('src/worker.js')
+          s = p.read_text()
+          pattern = r"async function findRealtimeDataset\(env, lat, lon\)\{.*?\n\}\n\nasync function decodeGtfsRt"
+          replacement = '''async function findRealtimeDataset(env, lat, lon){
+            const commune=await reverseCommune(lat,lon).catch(()=>null);
+            const arr=await getTransportCatalog(env);
+            const communeName=textFold(commune?.nom||'');
+            const insee=String(commune?.code||'');
+            const nearLeMans=distanceM(lat,lon,48.0061,0.1996)<50000;
+            const scored=[];
+            for(const ds of arr){
+              const resources=chooseRealtimeResources(ds);
+              if(!resources.vehicle) continue;
+              const hay=textFold(JSON.stringify({title:ds.title,slug:ds.slug,covered_area:ds.covered_area,territory:ds.territory,aom:ds.aom}));
+              let score=0;
+              if(communeName.length>2 && hay.includes(communeName)) score+=120;
+              if(insee && new RegExp(`(^|\\D)${insee}(\\D|$)`).test(hay)) score+=180;
+              if(nearLeMans && /setram|le mans/.test(hay)) score+=300;
+              if(score>0) scored.push({ds,score});
+            }
+            scored.sort((a,b)=>b.score-a.score);
+            const best=scored[0];
+            return {commune,dataset:best&&best.score>=100?best.ds:null};
+          }
+
+          async function decodeGtfsRt'''
+          s2, n = re.subn(pattern, replacement, s, count=1, flags=re.S)
+          if n != 1:
+            raise SystemExit('transport matcher pattern not found')
+          p.write_text(s2)
+
+          # 3) Client map resizing, readable transport alerts, no distant alerts when no local vehicle.
+          p = Path('public/app.js')
+          s = p.read_text()
+          s = s.replace("  state.map.addControl(new maplibregl.NavigationControl({showCompass:false}),'top-left');", "  state.map.addControl(new maplibregl.NavigationControl({showCompass:false}),'top-left');\n  state.map.on('load',()=>{ state.map.resize(); setTimeout(()=>state.map.resize(),180); });\n  window.addEventListener('resize',()=>state.map?.resize());")
+          s = s.replace("    state.map.fitBounds(bounds,{padding:{top:45,bottom:45,left:45,right:390},maxZoom:14,duration:650});", "    state.map.resize();\n    state.map.fitBounds(bounds,{padding:{top:32,bottom:32,left:32,right:Math.min(360,Math.round(window.innerWidth*.32))},maxZoom:14,duration:450});\n    setTimeout(()=>state.map?.resize(),120);")
+          old_transport = '''    const chunks=[];
+            if(d.message) chunks.push(`<div class=\"empty\">${escapeHtml(d.message)}</div>`);
+            for(const v of d.vehicles||[]){ chunks.push(`<div class=\"realtime-row\"><div class=\"line-badge\">${escapeHtml(v.line||'?')}</div><div><b>${v.vehicle?`Véhicule ${escapeHtml(v.vehicle)}`:'Transport en approche'}</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · prochain arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class=\"eta\">${v.eta_minutes!=null?`${v.eta_minutes} min`:'Direct'}<small>${escapeHtml(d.network||'')}</small></div></div>`); }
+            for(const a of d.alerts||[]){ chunks.push(`<div class=\"alert\"><b>${escapeHtml(a.title)}</b>${a.description?`<br>${escapeHtml(a.description).slice(0,260)}`:''}</div>`); }
+            $('#transportBody').innerHTML=chunks.join('')||'<div class=\"empty\">Aucun véhicule temps réel détecté à proximité.</div>';'''
+          new_transport = '''    const chunks=[];
+            const vehicles=d.vehicles||[];
+            const cleanTransportText=v=>{const x=document.createElement('textarea');x.innerHTML=String(v||'').replace(/&amp;nbsp;|&nbsp;/gi,' ');return x.value.replace(/\\s+/g,' ').trim();};
+            if(d.message) chunks.push(`<div class=\"empty\">${escapeHtml(cleanTransportText(d.message))}</div>`);
+            for(const v of vehicles){ chunks.push(`<div class=\"realtime-row\"><div class=\"line-badge\">${escapeHtml(v.line||'?')}</div><div><b>${v.vehicle?`Véhicule ${escapeHtml(v.vehicle)}`:'Transport en approche'}</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · prochain arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class=\"eta\">${v.eta_minutes!=null?`${v.eta_minutes} min`:'Direct'}<small>${escapeHtml(d.network||'')}</small></div></div>`); }
+            if(vehicles.length || /setram|le mans/i.test(String(d.network||''))){
+              for(const a of d.alerts||[]){ const title=cleanTransportText(a.title),desc=cleanTransportText(a.description); chunks.push(`<div class=\"alert\"><b>${escapeHtml(title)}</b>${desc?`<br>${escapeHtml(desc).slice(0,260)}`:''}</div>`); }
+            }
+            $('#transportBody').innerHTML=chunks.join('')||`<div class=\"empty\">Aucun véhicule temps réel géolocalisé à proximité${d.location?.nom?` de ${escapeHtml(d.location.nom)}`:''}.</div>`;'''
+          if old_transport not in s:
+            raise SystemExit('client transport pattern not found')
+          s = s.replace(old_transport, new_transport)
+          p.write_text(s)
+
+          # 4) Make the map panel compact on tablets/desktops so no useless blank area remains.
+          p = Path('public/index.html')
+          s = p.read_text()
+          s = s.replace(".result-sheet .empty{padding:16px 8px!important}", ".result-sheet .empty{padding:16px 8px!important}\n      .map-wrap{height:430px!important}")
+          p.write_text(s)
+
+      - name: Commit fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/entry.js src/worker.js public/app.js public/index.html
+          git commit -m "Speed up search and fix local transport and map sizing"
+          git push
