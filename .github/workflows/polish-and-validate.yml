@@ -1,0 +1,42 @@
+name: Polish and validate site
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/polish-and-validate.yml
+
+permissions:
+  contents: write
+
+jobs:
+  polish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Polish event cards
+        run: |
+          cat >> public/app.css <<'EOF'
+
+/* final-event-image-polish */
+.event-photo{position:relative;overflow:hidden}
+.event-photo img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.event-category{position:relative;z-index:1}
+EOF
+      - name: Install dependencies
+        run: npm ci
+      - name: Check JavaScript syntax
+        run: |
+          node --check public/app.js
+          node --check src/entry.js
+          node --check src/worker.js
+      - name: Validate Worker bundle
+        run: npx wrangler deploy --dry-run
+      - name: Commit polish
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/app.css
+          git diff --cached --quiet || git commit -m "Polish event cards after full site redesign"
+          git push
