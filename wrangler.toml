@@ -7,17 +7,8 @@ compatibility_flags = ["nodejs_compat"]
 directory = "./public"
 binding = "ASSETS"
 
-[[d1_databases]]
-binding = "DB"
-database_name = "jai-besoin-de-db"
-database_id = "REMPLACE_MOI_APRES_CREATION_D1"
-
-[[r2_buckets]]
-binding = "PHOTOS"
-bucket_name = "jai-besoin-de-photos"
-
-[[send_email]]
-name = "EMAIL"
+# Les liaisons D1, R2 et e-mail seront ajoutées après le premier déploiement,
+# depuis Cloudflare, sans bloquer la mise en ligne initiale du site.
 
 [vars]
 APP_NAME = "J’ai besoin de..."
