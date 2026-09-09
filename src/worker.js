@@ -244,30 +244,9 @@ function normalizeEventsPayload(payload, lat, lon) {
   }).filter(Boolean).sort((a,b)=>a.distance-b.distance);
 }
 
-async function eventsEndpoint(env,url) {
-  const lat=toNum(url.searchParams.get('lat')),lon=toNum(url.searchParams.get('lon')),radius=clamp(toNum(url.searchParams.get('radius'),25000),1000,100000);
-  if(!lat||!lon)return json({error:'Coordonnées manquantes'},400);
-  const commune = await reverseCommune(lat,lon).catch(()=>null);
-  const ext=[];
-  const api=env.EVENTS_API_URL;
-  if(api){
-    try{
-      const u=new URL(api); if(commune?.codeDepartement)u.searchParams.set('departement',commune.codeDepartement); u.searchParams.set('limit','200');
-      const ck=new Request(`https://cache.local/events/${commune?.codeDepartement||lat.toFixed(1)}`),c=caches.default;
-      let rr=await c.match(ck);
-      if(!rr){ const src=await fetch(u,{headers:{accept:'application/json'}}); if(src.ok){ rr=new Response(await src.arrayBuffer(),{headers:{'content-type':'application/json','cache-control':'public,max-age=900'}}); await c.put(ck,rr.clone()); } }
-      if(rr){ ext.push(...normalizeEventsPayload(await rr.json(),lat,lon)); }
-    }catch{}
-  }
-  let community=[];
-  if(env.DB){
-    const deg=radius/111000;
-    const rows=await env.DB.prepare(`SELECT * FROM community_events WHERE status='approved' AND lat BETWEEN ?1 AND ?2 AND lon BETWEEN ?3 AND ?4 AND starts_at >= datetime('now','-1 day') ORDER BY starts_at LIMIT 100`).bind(lat-deg,lat+deg,lon-deg,lon+deg).all();
-    community=(rows.results||[]).map(e=>({...e,source:'Communauté',distance:Math.round(distanceM(lat,lon,e.lat,e.lon))}));
-  }
-  const events=[...community,...ext].filter(e=>e.distance<=radius).sort((a,b)=>(a.starts_at||'').localeCompare(b.starts_at||'')).slice(0,80);
-  return json({location:commune,events,generated_at:new Date().toISOString()});
-}
+function apiSlug(v=''){return String(v).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');}
+async function tourismEventsForDepartment(code,lat,lon,days=180){if(!code)return[];const cache=caches.default;const horizon=Math.max(7,Math.min(365,Number(days)||180));const key=new Request(`https://cache.local/tourism-events/${encodeURIComponent(code)}/${horizon}`);const hit=await cache.match(key);if(hit)return hit.json();try{const depRes=await fetch(`https://geo.api.gouv.fr/departements/${encodeURIComponent(code)}`,{headers:{accept:'application/json'}});if(!depRes.ok)return[];const dep=await depRes.json();const slug=apiSlug(dep.nom||'');const [communesRes,eventsRes]=await Promise.all([fetch(`https://geo.api.gouv.fr/communes?codeDepartement=${encodeURIComponent(code)}&fields=nom,code,centre&format=json&geometry=centre`,{headers:{accept:'application/json'}}),fetch(`https://france-evasion-regions.com/api/open/evenements.json?dept=${encodeURIComponent(slug)}&limit=500`,{headers:{accept:'application/json','user-agent':'jai-besoin-de/1.0'}})]);if(!eventsRes.ok)return[];const communes=communesRes.ok?await communesRes.json():[];const coords=new Map(),byName=new Map();for(const c of Array.isArray(communes)?communes:[]){const co=c?.centre?.coordinates;if(Array.isArray(co)&&co.length>=2){const pos={lon:Number(co[0]),lat:Number(co[1])};coords.set(String(c.code),pos);byName.set(normTerm(c.nom),pos);}}const payload=await eventsRes.json();const arr=payload?.evenements||payload?.events||[];const today=new Date();today.setHours(0,0,0,0);const limitDate=new Date(today);limitDate.setDate(limitDate.getDate()+horizon);const out=[];for(const e of arr){const pos=coords.get(String(e.code_insee||''))||byName.get(normTerm(e.ville||''));if(!pos||!Number.isFinite(pos.lat)||!Number.isFinite(pos.lon))continue;const sd=e.date_debut?new Date(`${e.date_debut}T00:00:00`):null,ed=e.date_fin?new Date(`${e.date_fin}T23:59:59`):sd;if(sd&&!Number.isNaN(sd.getTime())&&sd>limitDate)continue;if(ed&&!Number.isNaN(ed.getTime())&&ed<today)continue;out.push({id:e.uuid||crypto.randomUUID(),title:e.nom||'Événement',category:e.categorie||'Événement',starts_at:e.date_debut||null,ends_at:e.date_fin||null,lat:pos.lat,lon:pos.lon,distance:Math.round(distanceM(lat,lon,pos.lat,pos.lon)),place:[e.ville,e.adresse].filter(Boolean).join(' · ')||e.ville||null,description:e.description||null,website:e.url||e.site_web||null,photo:e.photo||null,source:'France Évasion Régions / DATAtourisme'});}out.sort((a,b)=>(a.starts_at||'9999').localeCompare(b.starts_at||'9999')||a.distance-b.distance);const response=json(out,200,{'cache-control':'public,max-age=1800'});await cache.put(key,response.clone());return out;}catch{return[];}}
+async function eventsEndpoint(env,url){const lat=toNum(url.searchParams.get('lat')),lon=toNum(url.searchParams.get('lon')),radius=clamp(toNum(url.searchParams.get('radius'),50000),1000,100000),days=clamp(toNum(url.searchParams.get('days'),180),7,365);if(!lat||!lon)return json({error:'Coordonnées manquantes'},400);const commune=await reverseCommune(lat,lon).catch(()=>null);const ext=[];if(env.EVENTS_API_URL){try{const u=new URL(env.EVENTS_API_URL);if(commune?.codeDepartement)u.searchParams.set('departement',commune.codeDepartement);u.searchParams.set('limit','300');const src=await fetch(u,{headers:{accept:'application/json'}});if(src.ok)ext.push(...normalizeEventsPayload(await src.json(),lat,lon));}catch{}}const tourism=await tourismEventsForDepartment(commune?.codeDepartement,lat,lon,days).catch(()=>[]);let community=[];if(env.DB){const deg=radius/111000;const rows=await env.DB.prepare(`SELECT * FROM community_events WHERE status='approved' AND lat BETWEEN ?1 AND ?2 AND lon BETWEEN ?3 AND ?4 AND starts_at >= datetime('now','-1 day') AND starts_at <= datetime('now',?5) ORDER BY starts_at LIMIT 200`).bind(lat-deg,lat+deg,lon-deg,lon+deg,`+${days} day`).all();community=(rows.results||[]).map(e=>({...e,source:'Communauté',distance:Math.round(distanceM(lat,lon,e.lat,e.lon))}));}const seen=new Set();const events=[...community,...tourism,...ext].filter(e=>Number(e.distance)<=radius).filter(e=>{const k=`${normTerm(e.title||'')}|${e.starts_at||''}|${normTerm(e.place||'')}`;if(seen.has(k))return false;seen.add(k);return true;}).sort((a,b)=>(a.starts_at||'9999').localeCompare(b.starts_at||'9999')||a.distance-b.distance).slice(0,120);return json({location:commune,events,days,generated_at:new Date().toISOString(),sources:['Communauté','DATAtourisme']});}
 
 async function eventContributionEndpoint(request,env){
   if(!env.DB)return json({error:'Base D1 non configurée'},503);
@@ -492,7 +471,7 @@ async function findRealtimeDataset(env, lat, lon){
 
 async function decodeGtfsRt(url){
   if(!url)return null;
-  const cacheKey=new Request(`https://cache.local/rt/${btoa(url).replace(/=/g,'')}`);
+  const cacheKey=new Request(`https://cache.local/rt/${tinyHash(String(url))}`);
   const c=caches.default;
   let rr=await c.match(cacheKey);
   if(!rr){

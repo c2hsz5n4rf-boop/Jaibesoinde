@@ -127,10 +127,10 @@ function normalizeOverpass(data, lat, lon, category) {
 async function queryOverpass(lat,lon,radius,category,q,env) {
   const body=overpassBody(lat,lon,radius,category,q);
   if(!body) return [];
-  const endpoints=[env.OVERPASS_URL,'https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'].filter(Boolean);
+  const endpoints=[env.OVERPASS_URL,'https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.nchc.org.tw/api/interpreter'].filter(Boolean);
   for(const endpoint of [...new Set(endpoints)]) {
     try {
-      const r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded;charset=UTF-8','accept':'application/json','user-agent':'jai-besoin-de/1.0'},body:new URLSearchParams({data:body}),signal:AbortSignal.timeout(2200)});
+      const r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded;charset=UTF-8','accept':'application/json','user-agent':'jai-besoin-de/1.0'},body:new URLSearchParams({data:body}),signal:AbortSignal.timeout(3800)});
       if(!r.ok) continue;
       const data=await r.json();
       let results=normalizeOverpass(data,lat,lon,category).filter(x=>x.distance<=radius);
@@ -194,7 +194,7 @@ async function queryPhoton(lat,lon,radius,category,q) {
       u.searchParams.set('q',cleaned); u.searchParams.set('lat',String(lat)); u.searchParams.set('lon',String(lon));
       u.searchParams.set('bbox',bboxAround(lat,lon,radius)); u.searchParams.set('limit','30'); u.searchParams.set('lang','fr'); u.searchParams.set('countrycode','FR');
     }
-    const r=await fetch(u,{headers:{accept:'application/json','user-agent':'jai-besoin-de/1.0'},signal:AbortSignal.timeout(2200)});
+    const r=await fetch(u,{headers:{accept:'application/json','user-agent':'jai-besoin-de/1.0'},signal:AbortSignal.timeout(3800)});
     if(!r.ok) return [];
     return normalizePhoton(await r.json(),lat,lon,category,radius);
   } catch { return []; }
@@ -300,25 +300,12 @@ export default {
     const url=new URL(request.url);
     if(url.pathname==='/api/contact'&&request.method==='POST') return contactEndpoint(request,env);
     if(url.pathname==='/api/places'&&request.method==='GET') {
-    const requestedCategory=url.searchParams.get('category')||detectCategory(url.searchParams.get('q')||'');
-    if(requestedCategory==='campingcar'||requestedCategory==='parkinghaut') return searchFallback(url,env);
-    const fallbackPromise=searchFallback(url,env);
-    const primaryPromise=(async()=>{
-      try {
-        const primary=await app.fetch(request,env,ctx);
-        if(!primary.ok) return null;
-        const data=await primary.clone().json().catch(()=>null);
-        return Array.isArray(data?.results)&&data.results.length>0?primary:null;
-      } catch { return null; }
-    })();
-    const first=await Promise.race([
-      fallbackPromise.then(r=>({kind:'fallback',r})),
-      primaryPromise.then(r=>({kind:'primary',r}))
-    ]);
-    if(first.kind==='primary'&&first.r) return first.r;
-    if(first.kind==='fallback') return first.r;
-    return fallbackPromise;
-  }
+      const requestedCategory=url.searchParams.get('category')||detectCategory(url.searchParams.get('q')||'');
+      const fallbackTask=(async()=>{const r=await searchFallback(url,env);const data=await r.clone().json().catch(()=>({}));return{kind:'fallback',r,count:Array.isArray(data.results)?data.results.length:0};})();
+      const primaryTask=(async()=>{try{const r=await app.fetch(request,env,ctx);if(!r.ok)return{kind:'primary',r:null,count:0};const data=await r.clone().json().catch(()=>({}));return{kind:'primary',r,count:Array.isArray(data.results)?data.results.length:0};}catch{return{kind:'primary',r:null,count:0};}})();
+      if(requestedCategory==='campingcar'||requestedCategory==='parkinghaut'){const first=await fallbackTask;if(first.count)return first.r;const second=await primaryTask;return second.r||first.r;}
+      const first=await Promise.race([fallbackTask,primaryTask]);if(first.r&&first.count>0)return first.r;const second=await(first.kind==='fallback'?primaryTask:fallbackTask);if(second.r&&second.count>0)return second.r;return first.r||second.r||json({category:requestedCategory||'autre',results:[],message:'Aucun résultat trouvé.'});
+    }
     return app.fetch(request,env,ctx);
   },
   async scheduled(controller, env, ctx) {

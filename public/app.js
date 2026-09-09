@@ -6,17 +6,27 @@ const state = {
   q: '',
   map: null,
   markers: [],
-  locationReady: false
+  locationReady: false,
+  eventWindow: 180
 };
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
-const api = async (url, options) => {
-  const r = await fetch(url, options);
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || 'Erreur');
-  return data;
+const api = async (url, options={}) => {
+  const target=new URL(url,window.location.origin);
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),9000);
+  try{
+    const r=await fetch(target.href,{...options,signal:options.signal||controller.signal});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.details||data.error||`Erreur ${r.status}`);
+    return data;
+  }catch(error){
+    if(error?.name==='AbortError') throw new Error('La source met trop de temps à répondre. Réessaie dans quelques secondes.');
+    throw error;
+  }finally{clearTimeout(timer);}
 };
+function apiUrl(path,params={}){const u=new URL(path,window.location.origin);Object.entries(params).forEach(([k,v])=>{if(v!==undefined&&v!==null&&v!=='')u.searchParams.set(k,String(v));});return u.href;}
 
 const track = (event_type, label) => {
   const payload=JSON.stringify({event_type,label});
@@ -82,25 +92,11 @@ function focusPlace(p){
   new maplibregl.Popup({offset:22}).setLngLat([p.lon,p.lat]).setHTML(`<strong>${escapeHtml(p.title)}</strong><br><small>${formatDistance(p.distance)}</small>${p.address?`<br><small>${escapeHtml(p.address)}</small>`:''}<br><a href="${url}" target="_blank" rel="noopener">Itinéraire</a>`).addTo(state.map);
 }
 
-async function searchPlaces(qOrCat, isCategory=false){
-  const q=isCategory?'':qOrCat;
-  track(isCategory?'categorie':'recherche', isCategory?String(qOrCat):String(qOrCat).slice(0,120));
-  const category=isCategory?qOrCat:'';
-  state.q=q; if(category) state.category=category;
-  $('#placeResults').innerHTML='<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
-  $('#resultCount').textContent='Recherche…';
-  try{
-    const params=new URLSearchParams({lat:state.lat,lon:state.lon,radius:state.radius,q});
-    if(category) params.set('category',category);
-    const data=await api(`/api/places?${params}`);
-    state.category=data.category;
-    $('#resultTitle').textContent=data.label;
-    $('#resultCount').textContent=`${data.results.length} résultat${data.results.length>1?'s':''}`;
-    renderPlaces(data.results,data);
-  }catch(e){
-    $('#resultCount').textContent='Indisponible';
-    $('#placeResults').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`;
-  }
+async function searchPlaces(qOrCat,isCategory=false){
+  const q=isCategory?'':String(qOrCat||'').trim();const category=isCategory?String(qOrCat||''):'';
+  track(isCategory?'categorie':'recherche',isCategory?category:q.slice(0,120));state.q=q;if(category)state.category=category;
+  $('#placeResults').innerHTML='<div class="skeleton"></div><div class="skeleton"></div>';$('#resultCount').textContent='Recherche…';
+  try{const data=await api(apiUrl('/api/places',{lat:Number(state.lat).toFixed(6),lon:Number(state.lon).toFixed(6),radius:state.radius,q,category}));const results=Array.isArray(data.results)?data.results:[];state.category=data.category||category||state.category;$('#resultTitle').textContent=data.label||'Services utiles à proximité';$('#resultCount').textContent=`${results.length} résultat${results.length>1?'s':''}`;renderPlaces(results,data);}catch(e){$('#resultCount').textContent='Indisponible';$('#placeResults').innerHTML=`<div class="empty">${escapeHtml(e.message||'Recherche momentanément indisponible.')}</div>`;}
 }
 
 function renderPlaces(items,meta={}){
@@ -127,47 +123,14 @@ function departureWhen(d){
 
 async function loadTransport(){
   $('#transportBody').innerHTML='<div class="skeleton"></div><div class="skeleton"></div>';
-  try{
-    const localRadius=1500;
-    const d=await api(`/api/transport/nearby?lat=${state.lat}&lon=${state.lon}&radius=${localRadius}`);
-    const chunks=[];
-    const cleanTransportText=v=>{const x=document.createElement('textarea');x.innerHTML=String(v||'').replace(/&amp;nbsp;|&nbsp;/gi,' ');return x.value.replace(/\s+/g,' ').trim();};
-    const departures=(d.departures||[]).slice(0,10);
-    const visibleRouteIds=new Set(departures.map(x=>String(x.route_id||'')));
-    $('#transport h2').textContent='Prochains départs autour de toi';
-
-    for(const dep of departures){
-      const direction=dep.headsign?`vers ${escapeHtml(dep.headsign)}`:'prochain départ';
-      chunks.push(`<div class="departure-row"><div class="line-badge">${escapeHtml(dep.line||'?')}</div><div class="departure-main"><b>${direction}</b><small>${escapeHtml(dep.stop_name||'Arrêt proche')} · ${formatDistance(dep.stop_distance||0)}</small></div><div class="departure-time">${escapeHtml(departureWhen(dep))}<small>horaire prévu</small></div></div>`);
-    }
-
-    if(!departures.length){
-      const byLine=new Map();
-      for(const v of (d.vehicles||[]).sort((a,b)=>a.distance-b.distance)){
-        const line=String(v.line||'?');
-        if(!byLine.has(line))byLine.set(line,v);
-      }
-      for(const v of [...byLine.values()].slice(0,6)){
-        chunks.push(`<div class="departure-row"><div class="line-badge">${escapeHtml(v.line||'?')}</div><div class="departure-main"><b>Ligne ${escapeHtml(v.line||'?')} près de toi</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class="departure-time">${v.eta_minutes!=null?`${v.eta_minutes} min`:'En circulation'}<small>temps réel</small></div></div>`);
-      }
-    }
-
-    const localAlerts=(d.alerts||[]).filter(a=>!visibleRouteIds.size||(a.route_ids||[]).some(r=>visibleRouteIds.has(String(r)))).slice(0,3);
-    for(const a of localAlerts){
-      const title=cleanTransportText(a.title),desc=cleanTransportText(a.description);
-      chunks.push(`<div class="alert"><b>${escapeHtml(title)}</b>${desc?`<br>${escapeHtml(desc).slice(0,200)}`:''}</div>`);
-    }
-    $('#transportBody').innerHTML=chunks.join('')||`<div class="empty">Aucun départ trouvé dans les 7 prochains jours à moins de 1,5 km${d.location?.nom?` autour de ${escapeHtml(d.location.nom)}`:''}.</div>`;
-  }catch(e){ $('#transportBody').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`; }
+  const render=async()=>{const d=await api(apiUrl('/api/transport/nearby',{lat:Number(state.lat).toFixed(6),lon:Number(state.lon).toFixed(6),radius:1500}));const chunks=[];const clean=v=>{const x=document.createElement('textarea');x.innerHTML=String(v||'').replace(/&amp;nbsp;|&nbsp;/gi,' ');return x.value.replace(/\s+/g,' ').trim();};const departures=(Array.isArray(d.departures)?d.departures:[]).slice(0,12);const visible=new Set(departures.map(x=>String(x.route_id||'')));$('#transport h2').textContent='Prochains départs près de toi';for(const dep of departures){const dir=dep.headsign?`vers ${escapeHtml(dep.headsign)}`:'prochain départ';chunks.push(`<div class="departure-row"><div class="line-badge">${escapeHtml(dep.line||'?')}</div><div class="departure-main"><b>${dir}</b><small>${escapeHtml(dep.stop_name||'Arrêt proche')} · ${formatDistance(Number(dep.stop_distance)||0)}</small></div><div class="departure-time">${escapeHtml(departureWhen(dep))}<small>horaire prévu</small></div></div>`);}if(!departures.length){const byLine=new Map();for(const v of (Array.isArray(d.vehicles)?d.vehicles:[]).sort((a,b)=>a.distance-b.distance)){const line=String(v.line||'?');if(!byLine.has(line))byLine.set(line,v);}for(const v of [...byLine.values()].slice(0,5))chunks.push(`<div class="departure-row"><div class="line-badge">${escapeHtml(v.line||'?')}</div><div class="departure-main"><b>Ligne ${escapeHtml(v.line||'?')} près de toi</b><small>${formatDistance(Number(v.distance)||0)}</small></div><div class="departure-time">${v.eta_minutes!=null?`${v.eta_minutes} min`:'En circulation'}<small>temps réel</small></div></div>`);}for(const a of (Array.isArray(d.alerts)?d.alerts:[]).filter(a=>!visible.size||(a.route_ids||[]).some(r=>visible.has(String(r)))).slice(0,2)){const title=clean(a.title),desc=clean(a.description);chunks.push(`<div class="alert"><b>${escapeHtml(title)}</b>${desc?`<br>${escapeHtml(desc).slice(0,180)}`:''}</div>`);}$('#transportBody').innerHTML=chunks.join('')||`<div class="empty">Aucun départ trouvé dans les 7 prochains jours à moins de 1,5 km${d.location?.nom?` autour de ${escapeHtml(d.location.nom)}`:''}.</div>`;};
+  try{await render();}catch{await new Promise(r=>setTimeout(r,350));try{await render();}catch{$('#transportBody').innerHTML='<div class="empty">Les transports locaux ne répondent pas pour le moment. Les autres rubriques restent disponibles.</div>';}}
 }
 
-async function loadEvents(){
-  try{
-    const d=await api(`/api/events?lat=${state.lat}&lon=${state.lon}&radius=30000`);
-    const ev=(d.events||[]).slice(0,8);
-    $('#eventsBody').innerHTML=ev.length?ev.map(e=>`<div class="event-row"><span class="event-date">${e.starts_at?new Date(e.starts_at).toLocaleString('fr-FR',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'À venir'}</span><b>${escapeHtml(e.title)}</b><small>${escapeHtml(e.place||'À proximité')} · ${formatDistance(e.distance)}</small></div>`).join(''):'<div class="empty">Pas d’événement trouvé pour le moment.</div>';
-  }catch(e){ $('#eventsBody').innerHTML='<div class="empty">Événements momentanément indisponibles.</div>'; }
-}
+function eventDateInfo(e){const now=new Date();now.setHours(0,0,0,0);const start=e.starts_at?new Date(e.starts_at):null,end=e.ends_at?new Date(e.ends_at):null;const vs=start&&!Number.isNaN(start.getTime()),ve=end&&!Number.isNaN(end.getTime());if(vs&&start<now&&ve&&end>=now)return{label:'En cours',detail:`jusqu’au ${end.toLocaleDateString('fr-FR',{day:'numeric',month:'short'})}`};if(vs)return{label:start.toLocaleDateString('fr-FR',{weekday:'short',day:'numeric',month:'short'}),detail:''};return{label:'À venir',detail:''};}
+function renderEvents(events=[]){$('#eventsBody').innerHTML=events.length?events.map(e=>{const di=eventDateInfo(e);const image=e.photo?`<img src="${escapeHtml(e.photo)}" alt="" loading="lazy" />`:'';return `<article class="event-card"><div class="event-photo">${image}<span class="event-category">${escapeHtml(e.category||'Événement')}</span></div><div class="event-content"><span class="event-date">${escapeHtml(di.label)}${di.detail?` · ${escapeHtml(di.detail)}`:''}</span><b>${escapeHtml(e.title||'Événement')}</b><small>${escapeHtml(e.place||'À proximité')}${Number.isFinite(Number(e.distance))?` · ${formatDistance(Number(e.distance))}`:''}</small>${e.website?`<a class="event-link" href="${escapeHtml(e.website)}" target="_blank" rel="noopener">Voir l’événement ›</a>`:''}</div></article>`;}).join(''):'<div class="empty">Aucun événement trouvé dans cette période autour de toi.</div>';}
+async function loadEvents(days=state.eventWindow||180){state.eventWindow=Number(days)||180;$('#eventsBody').innerHTML='<div class="skeleton card"></div><div class="skeleton card"></div><div class="skeleton card"></div>';try{const d=await api(apiUrl('/api/events',{lat:Number(state.lat).toFixed(6),lon:Number(state.lon).toFixed(6),radius:50000,days:state.eventWindow}));renderEvents((Array.isArray(d.events)?d.events:[]).slice(0,12));}catch{$('#eventsBody').innerHTML='<div class="empty">Les événements sont momentanément indisponibles.</div>';}}
+$$('[data-event-window]').forEach(btn=>btn.addEventListener('click',()=>{$$('[data-event-window]').forEach(x=>x.classList.remove('active'));btn.classList.add('active');loadEvents(Number(btn.dataset.eventWindow));}));
 
 async function loadCategories(){
   try{
