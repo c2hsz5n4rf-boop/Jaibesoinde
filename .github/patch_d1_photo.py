@@ -157,3 +157,5 @@ if old_listener not in a:
     raise SystemExit('app contribution listener not found')
 a = a.replace(old_listener, new_listener, 1)
 app.write_text(a)
+
+# Trigger marker
