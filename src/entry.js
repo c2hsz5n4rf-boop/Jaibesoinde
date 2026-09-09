@@ -129,7 +129,7 @@ async function queryOverpass(lat,lon,radius,category,q,env) {
   const endpoints=[env.OVERPASS_URL,'https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'].filter(Boolean);
   for(const endpoint of [...new Set(endpoints)]) {
     try {
-      const r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded;charset=UTF-8','accept':'application/json','user-agent':'jai-besoin-de/1.0'},body:new URLSearchParams({data:body}),signal:AbortSignal.timeout(3500)});
+      const r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded;charset=UTF-8','accept':'application/json','user-agent':'jai-besoin-de/1.0'},body:new URLSearchParams({data:body}),signal:AbortSignal.timeout(2200)});
       if(!r.ok) continue;
       const data=await r.json();
       const results=normalizeOverpass(data,lat,lon,category).filter(x=>x.distance<=radius);
@@ -176,7 +176,7 @@ async function queryPhoton(lat,lon,radius,category,q) {
       u.searchParams.set('q',cleaned); u.searchParams.set('lat',String(lat)); u.searchParams.set('lon',String(lon));
       u.searchParams.set('bbox',bboxAround(lat,lon,radius)); u.searchParams.set('limit','30'); u.searchParams.set('lang','fr'); u.searchParams.set('countrycode','FR');
     }
-    const r=await fetch(u,{headers:{accept:'application/json','user-agent':'jai-besoin-de/1.0'},signal:AbortSignal.timeout(3500)});
+    const r=await fetch(u,{headers:{accept:'application/json','user-agent':'jai-besoin-de/1.0'},signal:AbortSignal.timeout(2200)});
     if(!r.ok) return [];
     return normalizePhoton(await r.json(),lat,lon,category,radius);
   } catch { return []; }
@@ -200,13 +200,19 @@ async function searchFallback(url, env) {
   const radii=[requested];
 
   for(const radius of radii) {
-  const [photon,overpass]=await Promise.all([
-    queryPhoton(lat,lon,radius,category,q),
-    queryOverpass(lat,lon,radius,category,q,env)
-  ]);
-  const results=dedupeResults([...(photon||[]),...(overpass||[])]).slice(0,70);
-  if(results.length) return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results,generated_at:new Date().toISOString(),fallback:true,source:'OpenStreetMap',effective_radius:radius,auto_expanded:false});
-}
+    const photonPromise=queryPhoton(lat,lon,radius,category,q);
+    const overpassPromise=queryOverpass(lat,lon,radius,category,q,env);
+    const first=await Promise.race([
+      photonPromise.then(v=>({source:'photon',v})),
+      overpassPromise.then(v=>({source:'overpass',v}))
+    ]);
+    let results=dedupeResults(first.v||[]).slice(0,70);
+    if(!results.length){
+      const other=first.source==='photon'?await overpassPromise:await photonPromise;
+      results=dedupeResults(other||[]).slice(0,70);
+    }
+    if(results.length) return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results,generated_at:new Date().toISOString(),fallback:true,source:'OpenStreetMap',effective_radius:radius,auto_expanded:false});
+  }
 
   return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results:[],generated_at:new Date().toISOString(),source_degraded:false,effective_radius:requested,message:`Aucun résultat trouvé dans un rayon de ${requested>=1000?(requested/1000)+' km':requested+' m'}. Essaie une distance plus grande.`});
 }

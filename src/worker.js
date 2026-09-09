@@ -387,7 +387,13 @@ async function transportEndpoint(env,url){
       vehicles.push({id:e.id||vp.vehicle?.id||tripId||crypto.randomUUID(),line:routeId||'?',trip_id:tripId,vehicle:vp.vehicle?.label||vp.vehicle?.id||null,lat:vlat,lon:vlon,distance:dist,next_stop_id:nextStopId,eta_minutes:nextTime?Math.max(0,Math.round((nextTime-now)/60)):null,status:vp.currentStatus||null,timestamp:epochSeconds(vp.timestamp)});
     }
     vehicles.sort((a,b)=>a.distance-b.distance);
-    const alerts=(af?.entity||[]).filter(e=>e.alert).slice(0,10).map(e=>({id:e.id,title:e.alert.headerText?.translation?.[0]?.text||'Information trafic',description:e.alert.descriptionText?.translation?.[0]?.text||'',effect:e.alert.effect||null}));
+    const alerts=(af?.entity||[]).filter(e=>e.alert).slice(0,30).map(e=>({
+      id:e.id,
+      title:e.alert.headerText?.translation?.[0]?.text||'Information trafic',
+      description:e.alert.descriptionText?.translation?.[0]?.text||'',
+      effect:e.alert.effect||null,
+      route_ids:[...new Set((e.alert.informedEntity||[]).map(x=>x.routeId).filter(Boolean))]
+    }));
     return json({network:found.dataset.title||found.dataset.slug||'Réseau local',coverage:'realtime',location:found.commune,vehicles:vehicles.slice(0,30),alerts,resources:{vehicle:Boolean(resources.vehicle),trip:Boolean(resources.trip),alert:Boolean(resources.alert)},generated_at:new Date().toISOString()});
   }catch(err){
     return json({network:null,coverage:'degraded',vehicles:[],alerts:[],message:'Les données transport sont momentanément indisponibles.',details:String(err.message||err)},200);

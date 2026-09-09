@@ -118,16 +118,28 @@ function renderPlaces(items,meta={}){
 async function loadTransport(){
   $('#transportBody').innerHTML='<div class="skeleton"></div><div class="skeleton"></div>';
   try{
-    const d=await api(`/api/transport/nearby?lat=${state.lat}&lon=${state.lon}&radius=7000`);
+    const localRadius=1500;
+    const d=await api(`/api/transport/nearby?lat=${state.lat}&lon=${state.lon}&radius=${localRadius}`);
     const chunks=[];
-    const vehicles=d.vehicles||[];
     const cleanTransportText=v=>{const x=document.createElement('textarea');x.innerHTML=String(v||'').replace(/&amp;nbsp;|&nbsp;/gi,' ');return x.value.replace(/\s+/g,' ').trim();};
-    if(d.message) chunks.push(`<div class="empty">${escapeHtml(cleanTransportText(d.message))}</div>`);
-    for(const v of vehicles){ chunks.push(`<div class="realtime-row"><div class="line-badge">${escapeHtml(v.line||'?')}</div><div><b>${v.vehicle?`Véhicule ${escapeHtml(v.vehicle)}`:'Transport en approche'}</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · prochain arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class="eta">${v.eta_minutes!=null?`${v.eta_minutes} min`:'Direct'}<small>${escapeHtml(d.network||'')}</small></div></div>`); }
-    if(vehicles.length || /setram|le mans/i.test(String(d.network||''))){
-      for(const a of d.alerts||[]){ const title=cleanTransportText(a.title),desc=cleanTransportText(a.description); chunks.push(`<div class="alert"><b>${escapeHtml(title)}</b>${desc?`<br>${escapeHtml(desc).slice(0,260)}`:''}</div>`); }
+    const byLine=new Map();
+    for(const v of (d.vehicles||[]).sort((a,b)=>a.distance-b.distance)){
+      const line=String(v.line||'?');
+      const current=byLine.get(line);
+      if(!current || v.distance<current.distance || (v.eta_minutes!=null && (current.eta_minutes==null || v.eta_minutes<current.eta_minutes))) byLine.set(line,v);
     }
-    $('#transportBody').innerHTML=chunks.join('')||`<div class="empty">Aucun véhicule temps réel géolocalisé à proximité${d.location?.nom?` de ${escapeHtml(d.location.nom)}`:''}.</div>`;
+    const vehicles=[...byLine.values()].sort((a,b)=>a.distance-b.distance).slice(0,8);
+    const visibleLines=new Set(vehicles.map(v=>String(v.line||'')));
+    if(d.message && !vehicles.length) chunks.push(`<div class="empty">${escapeHtml(cleanTransportText(d.message))}</div>`);
+    for(const v of vehicles){
+      chunks.push(`<div class="realtime-row"><div class="line-badge">${escapeHtml(v.line||'?')}</div><div><b>Ligne ${escapeHtml(v.line||'?')} près de toi</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · prochain arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class="eta">${v.eta_minutes!=null?`${v.eta_minutes} min`:'En circulation'}<small>${escapeHtml(d.network||'')}</small></div></div>`);
+    }
+    const localAlerts=(d.alerts||[]).filter(a=>(a.route_ids||[]).some(r=>visibleLines.has(String(r)))).slice(0,4);
+    for(const a of localAlerts){
+      const title=cleanTransportText(a.title),desc=cleanTransportText(a.description);
+      chunks.push(`<div class="alert"><b>${escapeHtml(title)}</b>${desc?`<br>${escapeHtml(desc).slice(0,220)}`:''}</div>`);
+    }
+    $('#transportBody').innerHTML=chunks.join('')||`<div class="empty">Aucun véhicule temps réel à moins de 1,5 km${d.location?.nom?` autour de ${escapeHtml(d.location.nom)}`:''}.</div>`;
   }catch(e){ $('#transportBody').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`; }
 }
 
@@ -173,8 +185,48 @@ $('#radiusSelect').addEventListener('change',e=>{state.radius=Number(e.target.va
 $('#locateBtn').addEventListener('click',async()=>{await requestLocation();refreshAll();});
 $('#refreshTransport').addEventListener('click',()=>{track('rubrique','transport_temps_reel');loadTransport();});
 $('#procedureForm').addEventListener('submit',e=>{e.preventDefault();const q=$('#procedureInput').value.trim();if(!q)return;track('demarche',q.slice(0,120));fetch('/api/search/log',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({q:`démarche ${q}`,lat:state.lat,lon:state.lon})});window.open(`https://www.service-public.fr/particuliers/recherche?keyword=${encodeURIComponent(q)}`,'_blank','noopener');});
-$('#findStation').addEventListener('click',()=>{track('plan','gare');searchPlaces('gare',false);});
-$('#findMall').addEventListener('click',()=>{track('plan','centre_commercial');searchPlaces('centre commercial',false);});
+const planDialog=$('#planDialog');
+let planPlaces=[];
+function osmEmbedUrl(p){
+  const dx=.0032,dy=.0022;
+  const bbox=[p.lon-dx,p.lat-dy,p.lon+dx,p.lat+dy].join(',');
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(`${p.lat},${p.lon}`)}`;
+}
+function openLevelUpUrl(p){ return `https://openlevelup.net/?l=0#19/${p.lat}/${p.lon}`; }
+function showPlanPlace(p){
+  if(!p)return;
+  $('#planPlaceTitle').textContent=p.title||'Plan du lieu';
+  $('#planPlaceAddress').textContent=[p.address,formatDistance(p.distance)].filter(Boolean).join(' · ');
+  $('#planFrame').src=osmEmbedUrl(p);
+  $('#planIndoor').href=openLevelUpUrl(p);
+  $('#planRoute').href=navUrl(p);
+  const official=$('#planOfficial');
+  if(p.website){official.href=p.website;official.hidden=false;}else{official.hidden=true;official.removeAttribute('href');}
+  $('#planAlternatives').innerHTML=planPlaces.map((x,i)=>`<button type="button" data-plan-index="${i}" class="plan-choice ${x.id===p.id?'active':''}"><b>${escapeHtml(x.title)}</b><small>${formatDistance(x.distance)}</small></button>`).join('');
+}
+$('#planAlternatives').addEventListener('click',e=>{const b=e.target.closest('[data-plan-index]');if(b)showPlanPlace(planPlaces[Number(b.dataset.planIndex)]);});
+$('[data-close-plan]').addEventListener('click',()=>planDialog.close());
+async function openNearbyPlan(category){
+  track('plan',category);
+  planDialog.showModal();
+  $('#planPlaceTitle').textContent=category==='gare'?'Recherche de la gare la plus proche…':'Recherche du centre commercial le plus proche…';
+  $('#planPlaceAddress').textContent='';
+  $('#planFrame').removeAttribute('src');
+  $('#planAlternatives').innerHTML='<div class="skeleton"></div><div class="skeleton"></div>';
+  try{
+    const params=new URLSearchParams({lat:state.lat,lon:state.lon,radius:'20000',category});
+    const d=await api(`/api/places?${params}`);
+    planPlaces=(d.results||[]).slice(0,6);
+    if(!planPlaces.length) throw new Error('Aucun lieu trouvé à proximité.');
+    showPlanPlace(planPlaces[0]);
+  }catch(err){
+    $('#planPlaceTitle').textContent='Plan indisponible';
+    $('#planPlaceAddress').textContent=err.message;
+    $('#planAlternatives').innerHTML='';
+  }
+}
+$('#findStation').addEventListener('click',()=>openNearbyPlan('gare'));
+$('#findMall').addEventListener('click',()=>openNearbyPlan('centrecommercial'));
 
 const dialog=$('#contributionDialog');
 $$('[data-open-contribution]').forEach(b=>b.addEventListener('click',()=>{track('rubrique','contribution');dialog.showModal();}));
