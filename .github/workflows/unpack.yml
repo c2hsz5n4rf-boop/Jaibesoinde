@@ -1,0 +1,36 @@
+name: Prepare Cloudflare project
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack the project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="jai-besoin-de-v2-cloudflare-email-stats.zip"
+          rm -rf /tmp/jbd
+          mkdir -p /tmp/jbd
+          unzip -q "$ZIP" -d /tmp/jbd
+          rsync -a /tmp/jbd/jai-besoin-de-v1/ ./
+          rm -f "$ZIP"
+      - name: Commit prepared project
+        shell: bash
+        run: |
+          if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Prepare Cloudflare project"
+          git push
