@@ -1,5 +1,5 @@
 name = "jai-besoin-de"
-main = "src/worker.js"
+main = "src/entry.js"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
