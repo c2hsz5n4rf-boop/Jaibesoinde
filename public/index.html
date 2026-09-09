@@ -3,99 +3,118 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#c61f3b" />
-  <meta name="description" content="Trouver les services, démarches, événements et transports utiles autour de soi, partout en France." />
+  <meta name="theme-color" content="#d61f45" />
+  <meta name="description" content="Trouver les services, transports, événements, démarches et plans utiles autour de soi, partout en France." />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="preconnect" href="https://tiles.openfreemap.org" />
   <link href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" rel="stylesheet" />
   <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
   <link rel="stylesheet" href="/app.css" />
-  <style>
-    @media (min-width:761px){
-      .result-sheet{bottom:auto!important;max-height:calc(100% - 20px)!important;min-height:0!important}
-      .result-sheet .empty{padding:16px 8px!important}
-      .map-wrap{height:430px!important}
-    }
-  </style>
   <title>J’ai besoin de...</title>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="#accueil" aria-label="Accueil">
-      <span class="brand-pin">●</span>
-      <span><strong>J’ai besoin <em>de...</em></strong><small>Partout en France</small></span>
+      <span class="brand-mark">●</span>
+      <span><strong>J’ai besoin <em>de...</em></strong><small>Des services utiles, partout en France</small></span>
     </a>
     <nav class="desktop-nav">
-      <a href="#autour">Autour de moi</a>
+      <a href="#autour">Services</a>
       <a href="#transport">Transports</a>
       <a href="#evenements">Événements</a>
       <a href="#demarches">Démarches</a>
       <a href="#plans">Plans</a>
     </nav>
-    <div class="top-actions"><button class="btn light" data-open-contact>Une question ?</button><button class="btn primary" data-open-contribution>+ Ajouter une info</button></div>
+    <div class="top-actions">
+      <button class="btn light" data-open-contact>Une question ?</button>
+      <button class="btn primary" data-open-contribution>+ Ajouter une info</button>
+    </div>
   </header>
 
   <main id="accueil" class="shell">
     <section class="hero">
-      <div>
-        <p class="eyebrow">Trouver · comprendre · s’organiser</p>
-        <h1>De quoi as-tu besoin&nbsp;?</h1>
-        <p>Un lieu, un service, un horaire, une démarche ou une sortie près de toi.</p>
+      <div class="hero-copy">
+        <p class="eyebrow">Simple, local, utile</p>
+        <h1>De quoi as-tu besoin ?</h1>
+        <p>Trouve un service, une démarche, un transport, un événement ou un lieu utile autour de toi.</p>
+        <div class="hero-points"><span>✓ Géolocalisé</span><span>✓ Données ouvertes</span><span>✓ Enrichi par les internautes</span></div>
       </div>
-      <div class="searchbox">
+      <div class="hero-search">
         <form id="searchForm">
           <span class="search-icon">⌕</span>
-          <input id="searchInput" autocomplete="off" placeholder="Ex. laverie ouverte, toilettes, borne de recharge…" />
+          <input id="searchInput" autocomplete="off" placeholder="Ex. une laverie ouverte, un marché, un parking haut..." />
           <button class="btn primary" type="submit">Rechercher</button>
         </form>
         <div id="suggestions" class="chips" aria-label="Suggestions"></div>
       </div>
+      <div class="hero-art" aria-hidden="true"><span class="sun"></span><span class="hill h1"></span><span class="hill h2"></span><span class="house">⌂</span><span class="pin p1">●</span><span class="pin p2">●</span></div>
     </section>
 
     <section class="quick-grid" aria-label="Catégories rapides">
+      <button data-cat="eau"><span>💧</span><b>Boire</b><small>Fontaines, eau potable</small></button>
       <button data-cat="toilettes"><span>🚻</span><b>Toilettes</b><small>Publiques, PMR</small></button>
-      <button data-cat="laverie"><span>🧺</span><b>Laveries</b><small>Automatiques</small></button>
-      <button data-cat="eau"><span>💧</span><b>Eau</b><small>Fontaines, gourdes</small></button>
-      <button data-cat="pharmacie"><span>✚</span><b>Pharmacies</b><small>À proximité</small></button>
-      <button data-cat="recharge"><span>⚡</span><b>Recharger</b><small>Véhicules, prises</small></button>
-      <button data-cat="campingcar"><span>🚐</span><b>Camping-car</b><small>Aires, vidange, parkings hauts</small></button>
-      <button data-scroll="#evenements"><span>🎟️</span><b>Événements</b><small>Autour de toi</small></button>
-      <button data-scroll="#plans"><span>🗺️</span><b>Se repérer</b><small>Gares, centres</small></button>
+      <button data-cat="laverie"><span>🧺</span><b>Laverie</b><small>Automatiques</small></button>
+      <button data-cat="recharge"><span>⚡</span><b>Recharger</b><small>Bornes électriques</small></button>
+      <button data-scroll="#demarches"><span>📄</span><b>Démarches</b><small>Services officiels</small></button>
+      <button data-cat="campingcar"><span>🚐</span><b>Camping-car</b><small>Aires, services, parkings hauts</small></button>
+      <button data-cat="veterinaire"><span>🐾</span><b>Animaux</b><small>Vétérinaires, services</small></button>
+      <button data-scroll="#evenements"><span>🎉</span><b>Événements</b><small>Sorties des prochains mois</small></button>
+      <button data-scroll="#plans"><span>🗺️</span><b>Se repérer</b><small>Gares, centres, itinéraires</small></button>
+    </section>
+
+    <section class="trust-row">
+      <div><strong>Partout en France</strong><span>La recherche s’adapte à ta position.</span></div>
+      <div><strong>Informations pratiques</strong><span>Distance, adresse, horaires et itinéraire.</span></div>
+      <div><strong>Site collaboratif</strong><span>Ajoute une info avec une photo comme preuve.</span></div>
     </section>
 
     <section class="dashboard">
-      <article id="autour" class="panel map-panel span-2">
+      <article id="autour" class="panel map-panel">
         <div class="panel-head">
-          <div><p class="kicker">Autour de moi</p><h2 id="resultTitle">Services utiles à proximité</h2></div>
+          <div><p class="kicker">📍 Autour de moi</p><h2 id="resultTitle">Services utiles à proximité</h2><p class="panel-sub">Les lieux les plus utiles, classés par distance.</p></div>
           <div class="actions"><select id="radiusSelect"><option value="1000">1 km</option><option value="2500" selected>2,5 km</option><option value="5000">5 km</option><option value="10000">10 km</option></select><button id="locateBtn" class="icon-btn" title="Me localiser">◎</button></div>
         </div>
-        <div class="map-wrap">
-          <div id="map"></div>
+        <div class="map-layout">
+          <div class="map-wrap"><div id="map"></div></div>
           <div class="result-sheet">
-            <div class="sheet-handle"></div>
             <div class="sheet-title"><strong>À proximité</strong><span id="resultCount">0 résultat</span></div>
             <div id="placeResults" class="list"></div>
           </div>
         </div>
       </article>
 
+      <article id="evenements" class="panel events-panel">
+        <div class="panel-head">
+          <div><p class="kicker">🎊 À venir</p><h2>Événements autour de moi</h2><p class="panel-sub">Marchés, concerts, festivals, expos et rendez-vous locaux.</p></div>
+          <span class="soft-badge">Prochains mois</span>
+        </div>
+        <div class="filters event-filters">
+          <button class="active" data-event-window="180">6 mois</button>
+          <button data-event-window="90">3 mois</button>
+          <button data-event-window="30">30 jours</button>
+          <button data-event-window="7">7 jours</button>
+        </div>
+        <div id="eventsBody" class="event-grid"><div class="skeleton card"></div><div class="skeleton card"></div><div class="skeleton card"></div></div>
+      </article>
+
       <article id="transport" class="panel transport-panel">
         <div class="panel-head">
-          <div><p class="kicker live">● Temps réel</p><h2>Transports autour de toi</h2></div>
+          <div><p class="kicker live">● Prochains départs</p><h2>Transports près de toi</h2><p class="panel-sub">Uniquement les arrêts et lignes proches, avec le prochain départ même demain.</p></div>
           <button id="refreshTransport" class="icon-btn" title="Actualiser">↻</button>
         </div>
-        <div id="transportBody" class="list compact"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+        <div id="transportBody" class="list compact"><div class="skeleton"></div><div class="skeleton"></div></div>
       </article>
 
-      <article id="evenements" class="panel events-panel">
-        <div class="panel-head"><div><p class="kicker">Aujourd’hui et à venir</p><h2>Événements autour de toi</h2></div><span class="soft-badge">Local</span></div>
-        <div class="filters"><button class="active">Aujourd’hui</button><button>Ce week-end</button><button>Gratuit</button></div>
-        <div id="eventsBody" class="list compact"><div class="skeleton"></div><div class="skeleton"></div></div>
+      <article id="plans" class="panel action-panel plans-panel">
+        <div class="panel-head"><div><p class="kicker">🗺️ Plans utiles</p><h2>Gares et centres commerciaux</h2><p class="panel-sub">Retrouve les accès, services et plans intérieurs quand ils sont disponibles.</p></div></div>
+        <div class="plan-cards">
+          <button id="findStation" class="plan-card station"><span class="plan-visual">🚉</span><span><b>Gare proche</b><small>Plan, sorties, services</small></span><i>›</i></button>
+          <button id="findMall" class="plan-card mall"><span class="plan-visual">🛍️</span><span><b>Centre commercial</b><small>Magasins et services</small></span><i>›</i></button>
+        </div>
       </article>
 
-      <article id="demarches" class="panel action-panel">
-        <div class="icon-card red">▤</div>
-        <div><p class="kicker">Démarches</p><h2>Trouver le bon formulaire</h2><p>Décris ce que tu veux faire. Le site t’oriente vers les démarches officielles.</p></div>
+      <article id="demarches" class="panel action-panel procedures-panel">
+        <div class="panel-head"><div><p class="kicker">📄 Démarches</p><h2>Trouver le bon formulaire</h2><p class="panel-sub">Décris ce que tu veux faire, le site t’envoie vers le bon service officiel.</p></div></div>
         <form id="procedureForm" class="mini-search"><input id="procedureInput" placeholder="Ex. refaire ma carte d’identité" /><button class="btn dark">Chercher</button></form>
         <div class="procedure-links">
           <a target="_blank" rel="noopener" href="https://www.service-public.fr/particuliers/vosdroits">Démarches particuliers ↗</a>
@@ -103,17 +122,9 @@
         </div>
       </article>
 
-      <article id="plans" class="panel action-panel">
-        <div class="icon-card green">⌖</div>
-        <div><p class="kicker">Plans</p><h2>Gares et centres commerciaux</h2><p>Repère les commerces, services, toilettes, sorties et accès autour du bâtiment.</p></div>
-        <div class="duo">
-          <button id="findStation" class="tile-button"><span>🚉</span><b>Gare proche</b><small>Plan et services</small></button>
-          <button id="findMall" class="tile-button"><span>🛍️</span><b>Centre commercial</b><small>Magasins et services</small></button>
-        </div>
-      </article>
-
       <article class="panel community-panel">
-        <div><p class="kicker">Communauté</p><h2>Le site grandit avec les internautes</h2><p>Une info manquante ou changée ? Ajoute-la avec une photo. Elle apparaît dans la base communautaire et peut être confirmée par d’autres.</p></div>
+        <div class="community-copy"><p class="kicker">👥 Une communauté qui rend service</p><h2>Le site grandit avec les internautes</h2><p>Une information manque ou a changé ? Ajoute-la avec une photo. Les contributions deviennent visibles dans la base communautaire et peuvent être confirmées par d’autres personnes.</p></div>
+        <div class="community-card"><div class="community-photo">📷</div><div><b>Une information utile près de chez toi ?</b><small>Horaires, accès, panne, nouvelle laverie, parking compatible camping-car...</small></div></div>
         <div class="community-actions"><button class="btn primary wide" data-open-contribution>📷 Ajouter une information</button><button class="btn light wide" data-open-contact>✉ Poser une question</button></div>
         <div id="trendBox" class="trend-box"></div>
       </article>
@@ -121,50 +132,16 @@
   </main>
 
   <nav class="mobile-nav" aria-label="Navigation mobile">
-    <a href="#accueil"><span>⌂</span>Accueil</a>
-    <a href="#autour"><span>⌖</span>Carte</a>
-    <a href="#transport"><span>▰</span>Transport</a>
-    <a href="#evenements"><span>□</span>Sorties</a>
-    <button data-open-contribution><span>＋</span>Ajouter</button>
+    <a href="#accueil"><span>⌂</span>Accueil</a><a href="#autour"><span>⌖</span>Autour</a><a href="#transport"><span>▰</span>Transport</a><a href="#evenements"><span>□</span>Sorties</a><button data-open-contribution><span>＋</span>Ajouter</button>
   </nav>
 
-  <dialog id="planDialog" class="plan-dialog">
-    <div class="plan-dialog-inner">
-      <div class="dialog-head"><div><p class="kicker">Plan du lieu</p><h2 id="planPlaceTitle">Chargement…</h2><p id="planPlaceAddress" class="dialog-note"></p></div><button type="button" class="close" data-close-plan>×</button></div>
-      <div class="plan-frame-wrap"><iframe id="planFrame" title="Plan détaillé" loading="lazy"></iframe></div>
-      <div class="plan-actions"><a id="planIndoor" class="btn primary" target="_blank" rel="noopener">Voir le plan intérieur</a><a id="planRoute" class="btn light" target="_blank" rel="noopener">Itinéraire</a><a id="planOfficial" class="btn light" target="_blank" rel="noopener" hidden>Site officiel</a></div>
-      <p class="plan-help">Le plan détaillé s’affiche ici. Le bouton « plan intérieur » ouvre les niveaux, commerces et services quand ils sont renseignés dans les données cartographiques.</p>
-      <div id="planAlternatives" class="plan-alternatives"></div>
-    </div>
-  </dialog>
+  <dialog id="planDialog" class="plan-dialog"><div class="plan-dialog-inner"><div class="dialog-head"><div><p class="kicker">Plan du lieu</p><h2 id="planPlaceTitle">Chargement…</h2><p id="planPlaceAddress" class="dialog-note"></p></div><button type="button" class="close" data-close-plan>×</button></div><div class="plan-frame-wrap"><iframe id="planFrame" title="Plan détaillé" loading="lazy"></iframe></div><div class="plan-actions"><a id="planIndoor" class="btn primary" target="_blank" rel="noopener">Voir le plan intérieur</a><a id="planRoute" class="btn light" target="_blank" rel="noopener">Itinéraire</a><a id="planOfficial" class="btn light" target="_blank" rel="noopener" hidden>Site officiel</a></div><p class="plan-help">Le plan intérieur s’ouvre quand les niveaux, commerces et services sont renseignés dans les données cartographiques.</p><div id="planAlternatives" class="plan-alternatives"></div></div></dialog>
 
-  <dialog id="contributionDialog">
-    <form id="contributionForm" method="dialog">
-      <div class="dialog-head"><div><p class="kicker">Contribution</p><h2>Ajouter une information</h2></div><button type="button" class="close" data-close-dialog>×</button></div>
-      <label>Nom du lieu ou du service<input name="title" required placeholder="Ex. Laverie du parking Carrefour" /></label>
-      <label>Catégorie<select name="category" required><option value="laverie">Laverie</option><option value="toilettes">Toilettes</option><option value="eau">Eau potable</option><option value="pharmacie">Pharmacie</option><option value="recharge">Recharge</option><option value="campingcar">Camping-car</option><option value="veterinaire">Vétérinaire</option><option value="autre">Autre</option></select></label>
-      <label>Précision<textarea name="description" rows="3" placeholder="Horaires, tarif, accès, état…"></textarea></label>
-      <label class="photo-field">Photo comme preuve<input name="photo" type="file" accept="image/*" capture="environment" /></label>
-      <div class="position-row"><span id="contribPosition">Position actuelle utilisée</span><button type="button" id="refreshContribPosition" class="text-btn">Actualiser</button></div>
-      <button class="btn primary wide" type="submit">Envoyer l’information</button>
-      <p id="contributionStatus" class="form-status"></p>
-    </form>
-  </dialog>
+  <dialog id="contributionDialog"><form id="contributionForm" method="dialog"><div class="dialog-head"><div><p class="kicker">Contribution</p><h2>Ajouter une information</h2></div><button type="button" class="close" data-close-dialog>×</button></div><label>Nom du lieu ou du service<input name="title" required placeholder="Ex. Laverie du parking Carrefour" /></label><label>Catégorie<select name="category" required><option value="laverie">Laverie</option><option value="toilettes">Toilettes</option><option value="eau">Eau potable</option><option value="pharmacie">Pharmacie</option><option value="recharge">Recharge</option><option value="campingcar">Camping-car</option><option value="veterinaire">Vétérinaire</option><option value="autre">Autre</option></select></label><label>Précision<textarea name="description" rows="3" placeholder="Horaires, tarif, accès, état…"></textarea></label><label class="photo-field">Photo comme preuve<input name="photo" type="file" accept="image/*" capture="environment" /></label><div class="position-row"><span id="contribPosition">Position actuelle utilisée</span><button type="button" id="refreshContribPosition" class="text-btn">Actualiser</button></div><button class="btn primary wide" type="submit">Envoyer l’information</button><p id="contributionStatus" class="form-status"></p></form></dialog>
 
-  <dialog id="contactDialog">
-    <form id="contactForm" method="dialog">
-      <div class="dialog-head"><div><p class="kicker">Une question ?</p><h2>Écris-nous</h2></div><button type="button" class="close" data-close-contact>×</button></div>
-      <p class="dialog-note">Ton message est envoyé au responsable du site. Son adresse personnelle n’est jamais affichée ni transmise.</p>
-      <label>Ton prénom ou ton nom, facultatif<input name="name" maxlength="100" autocomplete="name" placeholder="Ex. Marie" /></label>
-      <label>Ton e-mail, facultatif<input name="email" type="email" maxlength="180" autocomplete="email" placeholder="Pour pouvoir te répondre" /></label>
-      <label>Ta question<textarea name="message" rows="5" maxlength="5000" required placeholder="Explique ta question ou ton problème…"></textarea></label>
-      <label class="honeypot" aria-hidden="true">Site web<input name="website" tabindex="-1" autocomplete="off" /></label>
-      <button class="btn primary wide" type="submit">Envoyer ma question</button>
-      <p id="contactStatus" class="form-status"></p>
-    </form>
-  </dialog>
+  <dialog id="contactDialog"><form id="contactForm" method="dialog"><div class="dialog-head"><div><p class="kicker">Une question ?</p><h2>Écris-nous</h2></div><button type="button" class="close" data-close-contact>×</button></div><p class="dialog-note">Ton message est envoyé au responsable du site. Son adresse personnelle n’est jamais affichée ni transmise.</p><label>Ton prénom ou ton nom, facultatif<input name="name" maxlength="100" autocomplete="name" placeholder="Ex. Marie" /></label><label>Ton e-mail, facultatif<input name="email" type="email" maxlength="180" autocomplete="email" placeholder="Pour pouvoir te répondre" /></label><label>Ta question<textarea name="message" rows="5" maxlength="5000" required placeholder="Explique ta question ou ton problème…"></textarea></label><label class="honeypot" aria-hidden="true">Site web<input name="website" tabindex="-1" autocomplete="off" /></label><button class="btn primary wide" type="submit">Envoyer ma question</button><p id="contactStatus" class="form-status"></p></form></dialog>
 
-  <footer><strong>J’ai besoin de...</strong><button class="footer-contact" data-open-contact>Une question ?</button><span>Données ouvertes et contributions communautaires.</span><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a></footer>
+  <footer><strong>J’ai besoin de...</strong><span>Des citoyens mieux informés, un quotidien plus simple.</span><button class="footer-contact" data-open-contact>Une question ?</button><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a><span>Événements : données ouvertes DATAtourisme.</span></footer>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
