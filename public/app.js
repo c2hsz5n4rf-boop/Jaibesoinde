@@ -26,7 +26,7 @@ const track = (event_type, label) => {
   fetch('/api/analytics/event',{method:'POST',headers:{'content-type':'application/json'},body:payload,keepalive:true}).catch(()=>{});
 };
 
-const ICONS = {toilettes:'🚻',laverie:'🧺',eau:'💧',pharmacie:'✚',recharge:'⚡',parking:'🅿️',carburant:'⛽',supermarche:'🛒',veterinaire:'🐾',defibrillateur:'❤',douche:'🚿',recyclage:'♻️',velo:'🚲',campingcar:'🚐',restaurant:'🍴',banque:'🏧',poste:'✉️',bibliotheque:'📚',airejeux:'🛝',wifi:'◉'};
+const ICONS = {toilettes:'🚻',laverie:'🧺',eau:'💧',pharmacie:'✚',recharge:'⚡',parking:'🅿️',carburant:'⛽',supermarche:'🛒',veterinaire:'🐾',defibrillateur:'❤',douche:'🚿',recyclage:'♻️',velo:'🚲',campingcar:'🚐',restaurant:'🍴',boulangerie:'🥖',banque:'🏧',poste:'✉️',bibliotheque:'📚',airejeux:'🛝',wifi:'◉',gare:'🚉',centrecommercial:'🛍️',medecin:'🩺',dentiste:'🦷',hopital:'🏥',coiffeur:'✂️',cafe:'☕',hotel:'🏨',garage:'🔧',lavageauto:'🚗',opticien:'👓',police:'👮',mairie:'🏛️',cinema:'🎬',musee:'🏛️',parc:'🌳',piscine:'🏊'};
 
 function formatDistance(m){ return m < 1000 ? `${m} m` : `${(m/1000).toFixed(m<10000?1:0)} km`; }
 function escapeHtml(s=''){ return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[c])); }
@@ -62,11 +62,20 @@ function addMarker(p){
   state.markers.push(m);
 }
 
+function fitSearchResults(items){
+  if(!state.map || !items.length) return;
+  try{
+    const bounds=new maplibregl.LngLatBounds([state.lon,state.lat],[state.lon,state.lat]);
+    items.slice(0,20).forEach(p=>bounds.extend([p.lon,p.lat]));
+    state.map.fitBounds(bounds,{padding:{top:45,bottom:45,left:45,right:390},maxZoom:14,duration:650});
+  }catch{}
+}
+
 function focusPlace(p){
   track('lieu',String(p.title||'lieu').slice(0,140));
   state.map.flyTo({center:[p.lon,p.lat],zoom:16});
   const url=navUrl(p);
-  new maplibregl.Popup({offset:22}).setLngLat([p.lon,p.lat]).setHTML(`<strong>${escapeHtml(p.title)}</strong><br><small>${formatDistance(p.distance)}</small><br><a href="${url}" target="_blank" rel="noopener">Itinéraire</a>`).addTo(state.map);
+  new maplibregl.Popup({offset:22}).setLngLat([p.lon,p.lat]).setHTML(`<strong>${escapeHtml(p.title)}</strong><br><small>${formatDistance(p.distance)}</small>${p.address?`<br><small>${escapeHtml(p.address)}</small>`:''}<br><a href="${url}" target="_blank" rel="noopener">Itinéraire</a>`).addTo(state.map);
 }
 
 async function searchPlaces(qOrCat, isCategory=false){
@@ -75,6 +84,7 @@ async function searchPlaces(qOrCat, isCategory=false){
   const category=isCategory?qOrCat:'';
   state.q=q; if(category) state.category=category;
   $('#placeResults').innerHTML='<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
+  $('#resultCount').textContent='Recherche…';
   try{
     const params=new URLSearchParams({lat:state.lat,lon:state.lon,radius:state.radius,q});
     if(category) params.set('category',category);
@@ -82,15 +92,22 @@ async function searchPlaces(qOrCat, isCategory=false){
     state.category=data.category;
     $('#resultTitle').textContent=data.label;
     $('#resultCount').textContent=`${data.results.length} résultat${data.results.length>1?'s':''}`;
-    renderPlaces(data.results);
-  }catch(e){ $('#placeResults').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`; }
+    renderPlaces(data.results,data);
+  }catch(e){
+    $('#resultCount').textContent='Indisponible';
+    $('#placeResults').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`;
+  }
 }
 
-function renderPlaces(items){
+function renderPlaces(items,meta={}){
   clearMarkers();
-  if(!items.length){ $('#placeResults').innerHTML='<div class="empty">Aucun résultat proche. Tu peux ajouter une information si tu en connais une.</div>'; return; }
-  $('#placeResults').innerHTML=items.map((p,i)=>`<div class="list-item" data-place="${i}"><div class="list-icon">${ICONS[p.category]||'●'}</div><div class="list-main"><b>${escapeHtml(p.title)}</b><small>${formatDistance(p.distance)} · ${p.source}${p.opening_hours?` · ${escapeHtml(p.opening_hours)}`:''}</small></div><a class="list-action" href="${navUrl(p)}" target="_blank" rel="noopener">Y aller</a></div>`).join('');
+  if(!items.length){
+    $('#placeResults').innerHTML=`<div class="empty">${escapeHtml(meta.message||'Aucun résultat trouvé. Essaie un autre mot ou augmente la distance.')}</div>`;
+    return;
+  }
+  $('#placeResults').innerHTML=items.map((p,i)=>`<div class="list-item" data-place="${i}"><div class="list-icon">${ICONS[p.category]||'●'}</div><div class="list-main"><b>${escapeHtml(p.title)}</b><small>${formatDistance(p.distance)} · ${escapeHtml(p.source||'Donnée ouverte')}${p.address?`<br>${escapeHtml(p.address)}`:''}${p.opening_hours?`<br>${escapeHtml(p.opening_hours)}`:''}</small></div><a class="list-action" href="${navUrl(p)}" target="_blank" rel="noopener">Y aller</a></div>`).join('');
   items.forEach(addMarker);
+  fitSearchResults(items);
   $$('#placeResults [data-place]').forEach(el=>el.addEventListener('click',e=>{ const p=items[Number(el.dataset.place)]; if(e.target.tagName==='A') track('itineraire',String(p.title||'lieu').slice(0,140)); else focusPlace(p); }));
 }
 
@@ -100,7 +117,7 @@ async function loadTransport(){
     const d=await api(`/api/transport/nearby?lat=${state.lat}&lon=${state.lon}&radius=7000`);
     const chunks=[];
     if(d.message) chunks.push(`<div class="empty">${escapeHtml(d.message)}</div>`);
-    for(const v of d.vehicles||[]){ chunks.push(`<div class="realtime-row"><div class="line-badge">${escapeHtml(v.line||'?')}</div><div><b>${v.vehicle?`Véhicule ${escapeHtml(v.vehicle)}`:'Transport en approche'}</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · prochain arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class="eta">${v.eta_minutes!=null?`${v.eta_minutes} min`:'Direct'}<small>${d.network||''}</small></div></div>`); }
+    for(const v of d.vehicles||[]){ chunks.push(`<div class="realtime-row"><div class="line-badge">${escapeHtml(v.line||'?')}</div><div><b>${v.vehicle?`Véhicule ${escapeHtml(v.vehicle)}`:'Transport en approche'}</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · prochain arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class="eta">${v.eta_minutes!=null?`${v.eta_minutes} min`:'Direct'}<small>${escapeHtml(d.network||'')}</small></div></div>`); }
     for(const a of d.alerts||[]){ chunks.push(`<div class="alert"><b>${escapeHtml(a.title)}</b>${a.description?`<br>${escapeHtml(a.description).slice(0,260)}`:''}</div>`); }
     $('#transportBody').innerHTML=chunks.join('')||'<div class="empty">Aucun véhicule temps réel détecté à proximité.</div>';
   }catch(e){ $('#transportBody').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`; }
@@ -201,7 +218,6 @@ $('#contributionForm').addEventListener('submit',async e=>{
   } catch(err){status.textContent=err.message;}
 });
 
-
 const contactDialog=$('#contactDialog');
 $$('[data-open-contact]').forEach(b=>b.addEventListener('click',()=>{track('rubrique','contact');contactDialog.showModal();}));
 $('[data-close-contact]').addEventListener('click',()=>contactDialog.close());
@@ -211,7 +227,7 @@ $('#contactForm').addEventListener('submit',async e=>{
   const fd=new FormData(e.currentTarget);
   const payload={name:fd.get('name')||'',email:fd.get('email')||'',message:fd.get('message')||'',website:fd.get('website')||'',page:location.pathname+location.hash};
   try{
-    const d=await api('/api/contact',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
+    await api('/api/contact',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
     status.textContent='Ta question a bien été envoyée.';
     e.currentTarget.reset();
     setTimeout(()=>{contactDialog.close();status.textContent='';},1200);
