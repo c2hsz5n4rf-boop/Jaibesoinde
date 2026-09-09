@@ -60,7 +60,7 @@ const PHOTON_TAGS = {
 const SEARCH_ALIASES = [
   [/toilet|wc|sanitaire/i, 'toilettes'], [/laverie|linge|machine.*laver/i, 'laverie'],
   [/eau|fontaine|gourde/i, 'eau'], [/pharma/i, 'pharmacie'], [/recharg|borne.*elect|voiture electrique|usb/i, 'recharge'],
-  [/parking|stationnement/i, 'parking'], [/essence|gazole|diesel|carburant|station.service/i, 'carburant'],
+  [/parking(?!.*(?:haut|hauteur|grand gabarit))|stationnement/i, 'parking'], [/essence|gazole|diesel|carburant|station.service/i, 'carburant'],
   [/supermarch|courses|epicerie/i, 'supermarche'], [/veter/i, 'veterinaire'], [/defibr/i, 'defibrillateur'],
   [/douche/i, 'douche'], [/recycl|dechet/i, 'recyclage'], [/velo|gonfl/i, 'velo'],
   [/camping.?car|vidange|cassette wc/i, 'campingcar'], [/parking.*(haut|hauteur|grand gabarit)|vehicule.*haut|fourgon.*haut/i, 'parkinghaut'], [/boulanger|pain/i, 'boulangerie'], [/restaurant|manger|repas/i, 'restaurant'],
@@ -139,11 +139,16 @@ async function queryOverpass(lat,lon,radius,category,q,env) {
           const t=x.tags||{};
           const raw=String(t.maxheight||t['maxheight:physical']||'').replace(',','.').toLowerCase();
           const mh=/none|default|unlimited/.test(raw)?99:(parseFloat(raw)||null);
-          const explicit=['yes','designated','permissive'].includes(String(t.motorhome||t.caravan||t.hgv||'').toLowerCase());
+          const explicit=[t.motorhome,t.caravan,t.hgv].some(v=>['yes','designated','permissive'].includes(String(v||'').toLowerCase()));
           const surface=String(t.parking||'').toLowerCase()==='surface';
           if(mh!=null&&mh<3.0)return false;
           x.height_note=explicit?'Camping-car ou grand gabarit indiqué comme accepté':mh!=null&&mh<90?`Hauteur renseignée : ${mh.toFixed(1)} m`:surface?'Parking extérieur, hauteur à vérifier à l’entrée':'Accès grand gabarit à vérifier';
           return explicit||mh!=null||surface;
+        });
+      }else if(category==='campingcar'){
+        results.forEach(x=>{
+          const t=x.tags||{};
+          if(String(t.amenity||'')==='parking'&&[t.motorhome,t.caravan,t.hgv].some(v=>['yes','designated','permissive'].includes(String(v||'').toLowerCase()))) x.height_note='Parking indiqué comme compatible camping-car ou grand gabarit';
         });
       }
       if(results.length) return results;

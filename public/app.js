@@ -172,9 +172,9 @@ async function loadEvents(){
 async function loadCategories(){
   try{
     const d=await api('/api/categories');
-    const top=['toilettes','laverie','eau','pharmacie','recharge','campingcar'];
+    const top=['toilettes','laverie','eau','pharmacie','recharge','campingcar','parkinghaut'];
     const by=new Map(d.categories.map(c=>[c.slug,c]));
-    $('#suggestions').innerHTML=top.map(s=>`<button data-suggest-cat="${s}">${escapeHtml(by.get(s)?.label||s)}</button>`).join('');
+    $('#suggestions').innerHTML=top.map(s=>`<button data-suggest-cat="${s}">${escapeHtml(by.get(s)?.label||({parkinghaut:'Parking véhicule haut'})[s]||s)}</button>`).join('');
     const trends=(d.trending||[]).slice(0,6);
     $('#trendBox').innerHTML=trends.length?`<h3>Demandes qui montent</h3><div class="trend-tags">${trends.map(t=>`<button data-trend="${escapeHtml(t.term)}">${escapeHtml(t.term)} · ${t.count}</button>`).join('')}</div>`:'<h3>Les nouvelles demandes fréquentes apparaîtront ici.</h3>';
     $$('[data-suggest-cat]').forEach(b=>b.addEventListener('click',()=>searchPlaces(b.dataset.suggestCat,true)));
