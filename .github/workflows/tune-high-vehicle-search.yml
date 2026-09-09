@@ -1,0 +1,30 @@
+name: Tune high vehicle search
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/tune-high-vehicle-search.yml
+
+permissions:
+  contents: write
+
+jobs:
+  tune:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tune search
+        run: python .github/scripts/tune_high_vehicle_search.py
+      - name: Commit tuning
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/entry.js public/app.js
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+          else
+            git commit -m "Improve high vehicle parking search"
+            git push
+          fi
