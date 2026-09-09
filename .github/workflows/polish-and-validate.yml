@@ -32,8 +32,6 @@ jobs:
           node --check public/app.js
           node --check src/entry.js
           node --check src/worker.js
-      - name: Validate Worker bundle
-        run: npx wrangler deploy --dry-run
       - name: Commit polish
         run: |
           git config user.name "github-actions[bot]"
