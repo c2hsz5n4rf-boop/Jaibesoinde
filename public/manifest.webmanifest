@@ -1,0 +1,9 @@
+{
+  "name": "J’ai besoin de...",
+  "short_name": "J’ai besoin",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fffaf7",
+  "theme_color": "#c51f3a",
+  "icons": []
+}

@@ -1,0 +1,19 @@
+{
+  "name": "jai-besoin-de",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create jai-besoin-de-db",
+    "db:init:local": "wrangler d1 execute jai-besoin-de-db --local --file=./db/schema.sql && wrangler d1 execute jai-besoin-de-db --local --file=./db/seed.sql",
+    "db:init:remote": "wrangler d1 execute jai-besoin-de-db --remote --file=./db/schema.sql && wrangler d1 execute jai-besoin-de-db --remote --file=./db/seed.sql"
+  },
+  "dependencies": {
+    "gtfs-realtime-bindings": "^2.2.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.129.1"
+  }
+}
