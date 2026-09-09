@@ -26,7 +26,7 @@ const track = (event_type, label) => {
   fetch('/api/analytics/event',{method:'POST',headers:{'content-type':'application/json'},body:payload,keepalive:true}).catch(()=>{});
 };
 
-const ICONS = {toilettes:'🚻',laverie:'🧺',eau:'💧',pharmacie:'✚',recharge:'⚡',parking:'🅿️',carburant:'⛽',supermarche:'🛒',veterinaire:'🐾',defibrillateur:'❤',douche:'🚿',recyclage:'♻️',velo:'🚲',campingcar:'🚐',restaurant:'🍴',boulangerie:'🥖',banque:'🏧',poste:'✉️',bibliotheque:'📚',airejeux:'🛝',wifi:'◉',gare:'🚉',centrecommercial:'🛍️',medecin:'🩺',dentiste:'🦷',hopital:'🏥',coiffeur:'✂️',cafe:'☕',hotel:'🏨',garage:'🔧',lavageauto:'🚗',opticien:'👓',police:'👮',mairie:'🏛️',cinema:'🎬',musee:'🏛️',parc:'🌳',piscine:'🏊'};
+const ICONS = {toilettes:'🚻',laverie:'🧺',eau:'💧',pharmacie:'✚',recharge:'⚡',parking:'🅿️',carburant:'⛽',supermarche:'🛒',veterinaire:'🐾',defibrillateur:'❤',douche:'🚿',recyclage:'♻️',velo:'🚲',campingcar:'🚐',parkinghaut:'⬆️',restaurant:'🍴',boulangerie:'🥖',banque:'🏧',poste:'✉️',bibliotheque:'📚',airejeux:'🛝',wifi:'◉',gare:'🚉',centrecommercial:'🛍️',medecin:'🩺',dentiste:'🦷',hopital:'🏥',coiffeur:'✂️',cafe:'☕',hotel:'🏨',garage:'🔧',lavageauto:'🚗',opticien:'👓',police:'👮',mairie:'🏛️',cinema:'🎬',musee:'🏛️',parc:'🌳',piscine:'🏊'};
 
 function formatDistance(m){ return m < 1000 ? `${m} m` : `${(m/1000).toFixed(m<10000?1:0)} km`; }
 function escapeHtml(s=''){ return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[c])); }
@@ -109,10 +109,20 @@ function renderPlaces(items,meta={}){
     $('#placeResults').innerHTML=`<div class="empty">${escapeHtml(meta.message||'Aucun résultat trouvé. Essaie un autre mot ou augmente la distance.')}</div>`;
     return;
   }
-  $('#placeResults').innerHTML=items.map((p,i)=>`<div class="list-item" data-place="${i}"><div class="list-icon">${ICONS[p.category]||'●'}</div><div class="list-main"><b>${escapeHtml(p.title)}</b><small>${formatDistance(p.distance)} · ${escapeHtml(p.source||'Donnée ouverte')}${p.address?`<br>${escapeHtml(p.address)}`:''}${p.opening_hours?`<br>${escapeHtml(p.opening_hours)}`:''}</small></div><a class="list-action" href="${navUrl(p)}" target="_blank" rel="noopener">Y aller</a></div>`).join('');
+  $('#placeResults').innerHTML=items.map((p,i)=>`<div class="list-item" data-place="${i}"><div class="list-icon">${ICONS[p.category]||'●'}</div><div class="list-main"><b>${escapeHtml(p.title)}</b><small>${formatDistance(p.distance)} · ${escapeHtml(p.source||'Donnée ouverte')}${p.address?`<br>${escapeHtml(p.address)}`:''}${p.opening_hours?`<br>${escapeHtml(p.opening_hours)}`:''}${p.height_note?`<br><strong>${escapeHtml(p.height_note)}</strong>`:''}</small></div><a class="list-action" href="${navUrl(p)}" target="_blank" rel="noopener">Y aller</a></div>`).join('');
   items.forEach(addMarker);
   fitSearchResults(items);
   $$('#placeResults [data-place]').forEach(el=>el.addEventListener('click',e=>{ const p=items[Number(el.dataset.place)]; if(e.target.tagName==='A') track('itineraire',String(p.title||'lieu').slice(0,140)); else focusPlace(p); }));
+}
+
+function departureWhen(d){
+  const t=d.departure_time||'';
+  if(Number(d.day_offset)===0){
+    if(Number(d.minutes_until)<=90)return `${Math.max(0,Number(d.minutes_until))} min`;
+    return `Aujourd’hui ${t}`;
+  }
+  if(Number(d.day_offset)===1)return `Demain ${t}`;
+  return `${d.day_label||'À venir'} ${t}`;
 }
 
 async function loadTransport(){
@@ -122,24 +132,32 @@ async function loadTransport(){
     const d=await api(`/api/transport/nearby?lat=${state.lat}&lon=${state.lon}&radius=${localRadius}`);
     const chunks=[];
     const cleanTransportText=v=>{const x=document.createElement('textarea');x.innerHTML=String(v||'').replace(/&amp;nbsp;|&nbsp;/gi,' ');return x.value.replace(/\s+/g,' ').trim();};
-    const byLine=new Map();
-    for(const v of (d.vehicles||[]).sort((a,b)=>a.distance-b.distance)){
-      const line=String(v.line||'?');
-      const current=byLine.get(line);
-      if(!current || v.distance<current.distance || (v.eta_minutes!=null && (current.eta_minutes==null || v.eta_minutes<current.eta_minutes))) byLine.set(line,v);
+    const departures=(d.departures||[]).slice(0,10);
+    const visibleRouteIds=new Set(departures.map(x=>String(x.route_id||'')));
+    $('#transport h2').textContent='Prochains départs autour de toi';
+
+    for(const dep of departures){
+      const direction=dep.headsign?`vers ${escapeHtml(dep.headsign)}`:'prochain départ';
+      chunks.push(`<div class="departure-row"><div class="line-badge">${escapeHtml(dep.line||'?')}</div><div class="departure-main"><b>${direction}</b><small>${escapeHtml(dep.stop_name||'Arrêt proche')} · ${formatDistance(dep.stop_distance||0)}</small></div><div class="departure-time">${escapeHtml(departureWhen(dep))}<small>horaire prévu</small></div></div>`);
     }
-    const vehicles=[...byLine.values()].sort((a,b)=>a.distance-b.distance).slice(0,8);
-    const visibleLines=new Set(vehicles.map(v=>String(v.line||'')));
-    if(d.message && !vehicles.length) chunks.push(`<div class="empty">${escapeHtml(cleanTransportText(d.message))}</div>`);
-    for(const v of vehicles){
-      chunks.push(`<div class="realtime-row"><div class="line-badge">${escapeHtml(v.line||'?')}</div><div><b>Ligne ${escapeHtml(v.line||'?')} près de toi</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · prochain arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class="eta">${v.eta_minutes!=null?`${v.eta_minutes} min`:'En circulation'}<small>${escapeHtml(d.network||'')}</small></div></div>`);
+
+    if(!departures.length){
+      const byLine=new Map();
+      for(const v of (d.vehicles||[]).sort((a,b)=>a.distance-b.distance)){
+        const line=String(v.line||'?');
+        if(!byLine.has(line))byLine.set(line,v);
+      }
+      for(const v of [...byLine.values()].slice(0,6)){
+        chunks.push(`<div class="departure-row"><div class="line-badge">${escapeHtml(v.line||'?')}</div><div class="departure-main"><b>Ligne ${escapeHtml(v.line||'?')} près de toi</b><small>${formatDistance(v.distance)}${v.next_stop_id?` · arrêt ${escapeHtml(v.next_stop_id)}`:''}</small></div><div class="departure-time">${v.eta_minutes!=null?`${v.eta_minutes} min`:'En circulation'}<small>temps réel</small></div></div>`);
+      }
     }
-    const localAlerts=(d.alerts||[]).filter(a=>(a.route_ids||[]).some(r=>visibleLines.has(String(r)))).slice(0,4);
+
+    const localAlerts=(d.alerts||[]).filter(a=>!visibleRouteIds.size||(a.route_ids||[]).some(r=>visibleRouteIds.has(String(r)))).slice(0,3);
     for(const a of localAlerts){
       const title=cleanTransportText(a.title),desc=cleanTransportText(a.description);
-      chunks.push(`<div class="alert"><b>${escapeHtml(title)}</b>${desc?`<br>${escapeHtml(desc).slice(0,220)}`:''}</div>`);
+      chunks.push(`<div class="alert"><b>${escapeHtml(title)}</b>${desc?`<br>${escapeHtml(desc).slice(0,200)}`:''}</div>`);
     }
-    $('#transportBody').innerHTML=chunks.join('')||`<div class="empty">Aucun véhicule temps réel à moins de 1,5 km${d.location?.nom?` autour de ${escapeHtml(d.location.nom)}`:''}.</div>`;
+    $('#transportBody').innerHTML=chunks.join('')||`<div class="empty">Aucun départ trouvé dans les 7 prochains jours à moins de 1,5 km${d.location?.nom?` autour de ${escapeHtml(d.location.nom)}`:''}.</div>`;
   }catch(e){ $('#transportBody').innerHTML=`<div class="empty">${escapeHtml(e.message)}</div>`; }
 }
 

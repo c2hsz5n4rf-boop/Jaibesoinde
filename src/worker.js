@@ -1,4 +1,5 @@
 import GtfsRealtimeBindings from 'gtfs-realtime-bindings';
+import { unzipSync, strFromU8 } from 'fflate';
 
 const { transit_realtime } = GtfsRealtimeBindings;
 
@@ -313,6 +314,156 @@ function chooseRealtimeResources(ds){
   };
 }
 
+
+function chooseStaticGtfsResource(ds){
+  const all=collectResources(ds);
+  const ranked=all.map(x=>{
+    const t=String(`${x.name} ${x.format} ${x.url}`).toLowerCase();
+    let score=0;
+    if(/gtfs/.test(t)) score+=80;
+    if(/\.zip(?:$|\?)/i.test(x.url)||/zip/.test(String(x.format).toLowerCase())) score+=30;
+    if(/theori|horaire|schedule|static|offre/.test(t)) score+=30;
+    if(/vehicle.?position|trip.?update|service.?alert|temps.?reel|realtime|protobuf|\.pb(?:$|\?)/.test(t)) score-=180;
+    return {x,score};
+  }).filter(v=>v.score>40).sort((a,b)=>b.score-a.score);
+  return ranked[0]?.x||null;
+}
+
+function tinyHash(v=''){
+  let h=2166136261;
+  for(let i=0;i<v.length;i++){h^=v.charCodeAt(i);h=Math.imul(h,16777619);}
+  return (h>>>0).toString(36);
+}
+
+async function gtfsZipBytes(url){
+  const cache=caches.default;
+  const key=new Request(`https://cache.local/gtfs-static/${tinyHash(url)}`);
+  let hit=await cache.match(key);
+  if(!hit){
+    const src=await fetch(url,{headers:{accept:'application/zip,application/octet-stream'}});
+    if(!src.ok) throw new Error(`GTFS ${src.status}`);
+    hit=new Response(await src.arrayBuffer(),{headers:{'cache-control':'public,max-age=21600'}});
+    await cache.put(key,hit.clone());
+  }
+  return new Uint8Array(await hit.arrayBuffer());
+}
+
+function parseGtfsCsv(text){
+  const rows=[]; let row=[],field='',quoted=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(c==='"'){
+      if(quoted&&text[i+1]==='"'){field+='"';i++;} else quoted=!quoted;
+    }else if(c===','&&!quoted){row.push(field);field='';}
+    else if((c==='\n'||c==='\r')&&!quoted){
+      if(c==='\r'&&text[i+1]==='\n')i++;
+      row.push(field);field='';
+      if(row.some(v=>v!=='')) rows.push(row);
+      row=[];
+    }else field+=c;
+  }
+  if(field||row.length){row.push(field);rows.push(row);}
+  if(!rows.length)return [];
+  const headers=rows.shift().map((h,i)=>String(h).replace(i===0?/^\uFEFF/:'','').trim());
+  return rows.map(values=>Object.fromEntries(headers.map((h,i)=>[h,values[i]??''])));
+}
+
+function gtfsFileText(files,name){
+  const wanted=name.toLowerCase();
+  const key=Object.keys(files).find(k=>k.split('/').pop().toLowerCase()===wanted);
+  return key?strFromU8(files[key]):'';
+}
+
+function gtfsClockMinutes(v=''){
+  const m=String(v).match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  return m?Number(m[1])*60+Number(m[2]):null;
+}
+
+function gtfsServiceDate(offset){
+  const now=parisParts();
+  const d=new Date(Date.UTC(Number(now.year),Number(now.month)-1,Number(now.day)+offset,12));
+  const y=d.getUTCFullYear(),m=String(d.getUTCMonth()+1).padStart(2,'0'),day=String(d.getUTCDate()).padStart(2,'0');
+  const weekdays=['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  const labels=['dimanche','lundi','mardi','mercredi','jeudi','vendredi','samedi'];
+  return {key:`${y}${m}${day}`,iso:`${y}-${m}-${day}`,weekday:weekdays[d.getUTCDay()],label:labels[d.getUTCDay()]};
+}
+
+function gtfsServiceActive(serviceId,date,calendar,exceptions){
+  const ex=exceptions.get(`${date.key}|${serviceId}`);
+  if(ex===1)return true;
+  if(ex===2)return false;
+  const c=calendar.get(serviceId);
+  if(!c)return false;
+  if(c.start_date&&date.key<c.start_date)return false;
+  if(c.end_date&&date.key>c.end_date)return false;
+  return String(c[date.weekday]||'0')==='1';
+}
+
+async function scheduledGtfsDepartures(dataset,lat,lon,radius=1500){
+  const resource=chooseStaticGtfsResource(dataset);
+  if(!resource)return [];
+  const rounded=`${Number(lat).toFixed(3)}/${Number(lon).toFixed(3)}/${Math.round(radius/250)*250}`;
+  const cache=caches.default;
+  const cacheKey=new Request(`https://cache.local/gtfs-departures/${tinyHash(resource.url)}/${rounded}`);
+  const cached=await cache.match(cacheKey);
+  if(cached)return cached.json();
+
+  const bytes=await gtfsZipBytes(resource.url);
+  const files=unzipSync(bytes,{filter:f=>/(^|\/)(stops|stop_times|trips|routes|calendar|calendar_dates)\.txt$/i.test(f.name)});
+  const stops=parseGtfsCsv(gtfsFileText(files,'stops.txt'));
+  const nearby=stops.map(st=>{
+    const slat=Number(st.stop_lat),slon=Number(st.stop_lon);
+    if(!Number.isFinite(slat)||!Number.isFinite(slon))return null;
+    const distance=Math.round(distanceM(lat,lon,slat,slon));
+    return {...st,distance};
+  }).filter(Boolean).filter(st=>st.distance<=radius&&String(st.location_type||'0')!=='1').sort((a,b)=>a.distance-b.distance).slice(0,35);
+  if(!nearby.length)return [];
+
+  const stopMap=new Map(nearby.map(st=>[String(st.stop_id),st]));
+  const trips=new Map(parseGtfsCsv(gtfsFileText(files,'trips.txt')).map(t=>[String(t.trip_id),t]));
+  const routes=new Map(parseGtfsCsv(gtfsFileText(files,'routes.txt')).map(r=>[String(r.route_id),r]));
+  const calendar=new Map(parseGtfsCsv(gtfsFileText(files,'calendar.txt')).map(c=>[String(c.service_id),c]));
+  const exceptions=new Map();
+  for(const e of parseGtfsCsv(gtfsFileText(files,'calendar_dates.txt'))){
+    exceptions.set(`${e.date}|${e.service_id}`,Number(e.exception_type));
+  }
+  const stopTimes=parseGtfsCsv(gtfsFileText(files,'stop_times.txt')).filter(st=>stopMap.has(String(st.stop_id)));
+  const pp=parisParts();
+  const nowMinute=Number(pp.hour)*60+Number(pp.minute||0);
+  const bestByTripDay=new Map();
+
+  for(let serviceOffset=0;serviceOffset<8;serviceOffset++){
+    const date=gtfsServiceDate(serviceOffset);
+    for(const st of stopTimes){
+      const trip=trips.get(String(st.trip_id));
+      if(!trip||!gtfsServiceActive(String(trip.service_id),date,calendar,exceptions))continue;
+      const tm=gtfsClockMinutes(st.departure_time||st.arrival_time);
+      if(tm==null)continue;
+      const absolute=serviceOffset*1440+tm;
+      if(absolute<nowMinute||absolute>nowMinute+7*1440)continue;
+      const actualDayOffset=Math.floor(absolute/1440);
+      const clock=absolute%1440;
+      const hh=String(Math.floor(clock/60)).padStart(2,'0'),mm=String(clock%60).padStart(2,'0');
+      const stop=stopMap.get(String(st.stop_id));
+      const route=routes.get(String(trip.route_id))||{};
+      const key=`${trip.trip_id}|${date.key}`;
+      const item={
+        trip_id:String(trip.trip_id),route_id:String(trip.route_id||''),line:String(route.route_short_name||route.route_long_name||trip.route_id||'?'),
+        headsign:String(trip.trip_headsign||route.route_long_name||''),stop_id:String(st.stop_id),stop_name:String(stop.stop_name||'Arrêt proche'),
+        stop_distance:Number(stop.distance||0),departure_time:`${hh}:${mm}`,minutes_until:absolute-nowMinute,day_offset:actualDayOffset,
+        day_label:actualDayOffset===0?'Aujourd’hui':actualDayOffset===1?'Demain':gtfsServiceDate(actualDayOffset).label,
+        service_date:date.iso,scheduled:true
+      };
+      const prev=bestByTripDay.get(key);
+      if(!prev||item.stop_distance<prev.stop_distance)bestByTripDay.set(key,item);
+    }
+  }
+  const departures=[...bestByTripDay.values()].sort((a,b)=>a.minutes_until-b.minutes_until||a.stop_distance-b.stop_distance).slice(0,14);
+  const response=json(departures,200,{'cache-control':'public,max-age=300'});
+  await cache.put(cacheKey,response.clone());
+  return departures;
+}
+
 function textFold(v=''){ return String(v).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
 
 async function findRealtimeDataset(env, lat, lon){
@@ -324,12 +475,14 @@ async function findRealtimeDataset(env, lat, lon){
   const scored=[];
   for(const ds of arr){
     const resources=chooseRealtimeResources(ds);
-    if(!resources.vehicle) continue;
+    const staticGtfs=chooseStaticGtfsResource(ds);
+    if(!resources.vehicle && !staticGtfs) continue;
     const hay=textFold(JSON.stringify({title:ds.title,slug:ds.slug,covered_area:ds.covered_area,territory:ds.territory,aom:ds.aom}));
     let score=0;
     if(communeName.length>2 && hay.includes(communeName)) score+=120;
     if(insee && new RegExp(`(^|\D)${insee}(\D|$)`).test(hay)) score+=180;
     if(nearLeMans && /setram|le mans/.test(hay)) score+=300;
+    if(staticGtfs) score+=25;
     if(score>0) scored.push({ds,score});
   }
   scored.sort((a,b)=>b.score-a.score);
@@ -355,16 +508,17 @@ async function decodeGtfsRt(url){
 function epochSeconds(v){ if(v==null)return null; if(typeof v==='number')return v; if(typeof v==='bigint')return Number(v); if(typeof v==='object'&&typeof v.toNumber==='function')return v.toNumber(); return Number(v)||null; }
 
 async function transportEndpoint(env,url){
-  const lat=toNum(url.searchParams.get('lat')),lon=toNum(url.searchParams.get('lon')),radius=clamp(toNum(url.searchParams.get('radius'),5000),500,25000);
+  const lat=toNum(url.searchParams.get('lat')),lon=toNum(url.searchParams.get('lon')),radius=clamp(toNum(url.searchParams.get('radius'),1500),500,5000);
   if(!lat||!lon)return json({error:'Coordonnées manquantes'},400);
   try{
     const found=await findRealtimeDataset(env,lat,lon);
-    if(!found.dataset)return json({network:null,message:'Aucun flux de position temps réel compatible détecté automatiquement pour cette zone. Les horaires théoriques restent disponibles via les données ouvertes du réseau.',vehicles:[],departures:[],coverage:'catalogue-only',location:found.commune});
+    if(!found.dataset)return json({network:null,message:'Aucun réseau local compatible détecté pour cette zone.',vehicles:[],departures:[],alerts:[],coverage:'catalogue-only',location:found.commune});
     const resources=chooseRealtimeResources(found.dataset);
-    const [vf,tf,af]=await Promise.all([
+    const [vf,tf,af,departures]=await Promise.all([
       decodeGtfsRt(resources.vehicle?.url).catch(()=>null),
       decodeGtfsRt(resources.trip?.url).catch(()=>null),
-      decodeGtfsRt(resources.alert?.url).catch(()=>null)
+      decodeGtfsRt(resources.alert?.url).catch(()=>null),
+      scheduledGtfsDepartures(found.dataset,lat,lon,Math.min(radius,1500)).catch(()=>[])
     ]);
     const trips=new Map();
     for(const e of tf?.entity||[]) if(e.tripUpdate?.trip?.tripId) trips.set(e.tripUpdate.trip.tripId,e.tripUpdate);
@@ -388,18 +542,14 @@ async function transportEndpoint(env,url){
     }
     vehicles.sort((a,b)=>a.distance-b.distance);
     const alerts=(af?.entity||[]).filter(e=>e.alert).slice(0,30).map(e=>({
-      id:e.id,
-      title:e.alert.headerText?.translation?.[0]?.text||'Information trafic',
-      description:e.alert.descriptionText?.translation?.[0]?.text||'',
-      effect:e.alert.effect||null,
+      id:e.id,title:e.alert.headerText?.translation?.[0]?.text||'Information trafic',description:e.alert.descriptionText?.translation?.[0]?.text||'',effect:e.alert.effect||null,
       route_ids:[...new Set((e.alert.informedEntity||[]).map(x=>x.routeId).filter(Boolean))]
     }));
-    return json({network:found.dataset.title||found.dataset.slug||'Réseau local',coverage:'realtime',location:found.commune,vehicles:vehicles.slice(0,30),alerts,resources:{vehicle:Boolean(resources.vehicle),trip:Boolean(resources.trip),alert:Boolean(resources.alert)},generated_at:new Date().toISOString()});
+    return json({network:found.dataset.title||found.dataset.slug||'Réseau local',coverage:resources.vehicle?'realtime+schedule':'schedule',location:found.commune,vehicles:vehicles.slice(0,20),departures,alerts,resources:{vehicle:Boolean(resources.vehicle),trip:Boolean(resources.trip),alert:Boolean(resources.alert),static:Boolean(chooseStaticGtfsResource(found.dataset))},generated_at:new Date().toISOString()});
   }catch(err){
-    return json({network:null,coverage:'degraded',vehicles:[],alerts:[],message:'Les données transport sont momentanément indisponibles.',details:String(err.message||err)},200);
+    return json({network:null,coverage:'degraded',vehicles:[],departures:[],alerts:[],message:'Les données transport sont momentanément indisponibles.',details:String(err.message||err)},200);
   }
 }
-
 
 function parisParts(date = new Date()) {
   const parts = new Intl.DateTimeFormat('fr-FR', {

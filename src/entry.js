@@ -18,7 +18,8 @@ const SEARCH_RULES = {
   douche: ['[amenity=shower]'],
   recyclage: ['[amenity=recycling]'],
   velo: ['[amenity=bicycle_repair_station]', '[amenity=bicycle_parking]'],
-  campingcar: ['[tourism=caravan_site]', '[amenity=sanitary_dump_station]'],
+  campingcar: ['[tourism=caravan_site]', '[amenity=sanitary_dump_station]', '[amenity=parking][motorhome=yes]', '[amenity=parking][caravan=yes]', '[amenity=parking][hgv=yes]'],
+  parkinghaut: ['[amenity=parking][motorhome=yes]', '[amenity=parking][caravan=yes]', '[amenity=parking][hgv=yes]', '[amenity=parking][maxheight]', '[amenity=parking][parking=surface]'],
   restaurant: ['[amenity=restaurant]', '[amenity=fast_food]'],
   boulangerie: ['[shop=bakery]'],
   banque: ['[amenity=atm]', '[amenity=bank]'],
@@ -62,7 +63,7 @@ const SEARCH_ALIASES = [
   [/parking|stationnement/i, 'parking'], [/essence|gazole|diesel|carburant|station.service/i, 'carburant'],
   [/supermarch|courses|epicerie/i, 'supermarche'], [/veter/i, 'veterinaire'], [/defibr/i, 'defibrillateur'],
   [/douche/i, 'douche'], [/recycl|dechet/i, 'recyclage'], [/velo|gonfl/i, 'velo'],
-  [/camping.?car|vidange|cassette wc/i, 'campingcar'], [/boulanger|pain/i, 'boulangerie'], [/restaurant|manger|repas/i, 'restaurant'],
+  [/camping.?car|vidange|cassette wc/i, 'campingcar'], [/parking.*(haut|hauteur|grand gabarit)|vehicule.*haut|fourgon.*haut/i, 'parkinghaut'], [/boulanger|pain/i, 'boulangerie'], [/restaurant|manger|repas/i, 'restaurant'],
   [/distributeur|banque|retrait/i, 'banque'], [/poste|courrier/i, 'poste'], [/biblioth|mediat/i, 'bibliotheque'],
   [/aire.*jeu|enfant/i, 'airejeux'], [/wifi|wi-fi|internet/i, 'wifi'], [/gare|station ferroviaire/i, 'gare'],
   [/centre commercial|centre-commercial|galerie marchande|mall/i, 'centrecommercial'], [/medecin|docteur|generaliste/i, 'medecin'],
@@ -88,7 +89,7 @@ function detectCategory(q = '') {
 }
 
 function categoryLabel(cat) {
-  return ({toilettes:'Toilettes',laverie:'Laverie',eau:'Point d’eau',pharmacie:'Pharmacie',recharge:'Borne de recharge',parking:'Parking',carburant:'Station-service',supermarche:'Supermarché',veterinaire:'Vétérinaire',defibrillateur:'Défibrillateur',douche:'Douche',recyclage:'Point de recyclage',velo:'Service vélo',campingcar:'Service camping-car',restaurant:'Restaurant',boulangerie:'Boulangerie',banque:'Distributeur / banque',poste:'Bureau de poste',bibliotheque:'Bibliothèque',airejeux:'Aire de jeux',wifi:'Wi-Fi',gare:'Gare',centrecommercial:'Centre commercial',medecin:'Médecin',dentiste:'Dentiste',hopital:'Hôpital / clinique',coiffeur:'Coiffeur',cafe:'Café',hotel:'Hôtel',garage:'Garage automobile',lavageauto:'Lavage automobile',opticien:'Opticien',police:'Police / commissariat',mairie:'Mairie',cinema:'Cinéma',musee:'Musée',parc:'Parc',piscine:'Piscine'})[cat] || 'Lieu utile';
+  return ({toilettes:'Toilettes',laverie:'Laverie',eau:'Point d’eau',pharmacie:'Pharmacie',recharge:'Borne de recharge',parking:'Parking',carburant:'Station-service',supermarche:'Supermarché',veterinaire:'Vétérinaire',defibrillateur:'Défibrillateur',douche:'Douche',recyclage:'Point de recyclage',velo:'Service vélo',campingcar:'Camping-car : aires et parkings',parkinghaut:'Parking véhicule haut',restaurant:'Restaurant',boulangerie:'Boulangerie',banque:'Distributeur / banque',poste:'Bureau de poste',bibliotheque:'Bibliothèque',airejeux:'Aire de jeux',wifi:'Wi-Fi',gare:'Gare',centrecommercial:'Centre commercial',medecin:'Médecin',dentiste:'Dentiste',hopital:'Hôpital / clinique',coiffeur:'Coiffeur',cafe:'Café',hotel:'Hôtel',garage:'Garage automobile',lavageauto:'Lavage automobile',opticien:'Opticien',police:'Police / commissariat',mairie:'Mairie',cinema:'Cinéma',musee:'Musée',parc:'Parc',piscine:'Piscine'})[cat] || 'Lieu utile';
 }
 
 function distanceM(lat1, lon1, lat2, lon2) {
@@ -132,7 +133,19 @@ async function queryOverpass(lat,lon,radius,category,q,env) {
       const r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded;charset=UTF-8','accept':'application/json','user-agent':'jai-besoin-de/1.0'},body:new URLSearchParams({data:body}),signal:AbortSignal.timeout(2200)});
       if(!r.ok) continue;
       const data=await r.json();
-      const results=normalizeOverpass(data,lat,lon,category).filter(x=>x.distance<=radius);
+      let results=normalizeOverpass(data,lat,lon,category).filter(x=>x.distance<=radius);
+      if(category==='parkinghaut'){
+        results=results.filter(x=>{
+          const t=x.tags||{};
+          const raw=String(t.maxheight||t['maxheight:physical']||'').replace(',','.').toLowerCase();
+          const mh=/none|default|unlimited/.test(raw)?99:(parseFloat(raw)||null);
+          const explicit=['yes','designated','permissive'].includes(String(t.motorhome||t.caravan||t.hgv||'').toLowerCase());
+          const surface=String(t.parking||'').toLowerCase()==='surface';
+          if(mh!=null&&mh<3.0)return false;
+          x.height_note=explicit?'Camping-car ou grand gabarit indiqué comme accepté':mh!=null&&mh<90?`Hauteur renseignée : ${mh.toFixed(1)} m`:surface?'Parking extérieur, hauteur à vérifier à l’entrée':'Accès grand gabarit à vérifier';
+          return explicit||mh!=null||surface;
+        });
+      }
       if(results.length) return results;
     } catch {}
   }
@@ -202,14 +215,19 @@ async function searchFallback(url, env) {
   for(const radius of radii) {
     const photonPromise=queryPhoton(lat,lon,radius,category,q);
     const overpassPromise=queryOverpass(lat,lon,radius,category,q,env);
-    const first=await Promise.race([
-      photonPromise.then(v=>({source:'photon',v})),
-      overpassPromise.then(v=>({source:'overpass',v}))
-    ]);
-    let results=dedupeResults(first.v||[]).slice(0,70);
-    if(!results.length){
-      const other=first.source==='photon'?await overpassPromise:await photonPromise;
-      results=dedupeResults(other||[]).slice(0,70);
+    let results=[];
+    if(category==='campingcar'||category==='parkinghaut'){
+      results=dedupeResults(await overpassPromise).slice(0,70);
+    }else{
+      const first=await Promise.race([
+        photonPromise.then(v=>({source:'photon',v})),
+        overpassPromise.then(v=>({source:'overpass',v}))
+      ]);
+      results=dedupeResults(first.v||[]).slice(0,70);
+      if(!results.length){
+        const other=first.source==='photon'?await overpassPromise:await photonPromise;
+        results=dedupeResults(other||[]).slice(0,70);
+      }
     }
     if(results.length) return json({category:category||'autre',label:category?categoryLabel(category):`Résultats pour « ${q} »`,results,generated_at:new Date().toISOString(),fallback:true,source:'OpenStreetMap',effective_radius:radius,auto_expanded:false});
   }
@@ -277,6 +295,8 @@ export default {
     const url=new URL(request.url);
     if(url.pathname==='/api/contact'&&request.method==='POST') return contactEndpoint(request,env);
     if(url.pathname==='/api/places'&&request.method==='GET') {
+    const requestedCategory=url.searchParams.get('category')||detectCategory(url.searchParams.get('q')||'');
+    if(requestedCategory==='campingcar'||requestedCategory==='parkinghaut') return searchFallback(url,env);
     const fallbackPromise=searchFallback(url,env);
     const primaryPromise=(async()=>{
       try {

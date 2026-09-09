@@ -32,3 +32,35 @@
   .plan-actions{display:grid;grid-template-columns:1fr 1fr}
   .plan-actions a:first-child{grid-column:1/-1}
 }
+
+
+/* balanced-dashboard-v2 */
+.dashboard{grid-template-columns:repeat(12,minmax(0,1fr));gap:18px;align-items:start}
+.map-panel{grid-column:span 8}
+.transport-panel{grid-column:span 4;min-height:0}
+.events-panel{grid-column:span 4;min-height:330px}
+#demarches{grid-column:span 4;min-height:330px}
+#plans{grid-column:span 4;min-height:330px}
+.community-panel{grid-column:1/-1}
+.panel{padding:20px;border-radius:20px;box-shadow:0 8px 22px rgba(54,32,35,.045)}
+.panel-head{margin-bottom:12px}
+.transport-panel #transportBody{max-height:430px;overflow:auto;padding-right:4px}
+.departure-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--line)}
+.departure-row:last-child{border-bottom:0}
+.departure-main{min-width:0}.departure-main b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.departure-main small{display:block;margin-top:3px;color:var(--muted);font-size:11px}
+.departure-time{text-align:right;color:var(--red);font-size:16px;font-weight:900;white-space:nowrap}.departure-time small{display:block;color:var(--muted);font-size:9px;font-weight:700;margin-top:2px}
+@media(min-width:761px) and (max-width:1120px){
+  .dashboard{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+  .map-panel{grid-column:1/-1}
+  .transport-panel,.events-panel,#demarches,#plans{grid-column:span 1}
+  .community-panel{grid-column:1/-1}
+  .map-wrap{height:390px!important}
+  .transport-panel #transportBody{max-height:360px}
+  .events-panel,#demarches,#plans{min-height:300px}
+}
+@media(max-width:760px){
+  .dashboard{display:block}
+  .panel{padding:15px}
+  .departure-row{grid-template-columns:42px minmax(0,1fr) auto;gap:8px}
+  .departure-time{font-size:14px}
+}
